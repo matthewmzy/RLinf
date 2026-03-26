@@ -77,13 +77,13 @@ class DexpnpConfig(FrankaRobotConfig):
             [0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
         )
         self.reward_threshold = np.array(self.reward_threshold)
-        self.action_scale = np.array([0.03, 1.5, 1])
+        self.action_scale = np.array([0.05, 1.5, 1])
         self.hand_max_delta_per_step = 10000
         self.ee_pose_limit_min = self.target_ee_pose - np.array(
-            [0.1, 0.1, 0.1, 0.003, 0.003, 0.003]
+            [0.15, 0.15, 0.1, 0.008, 0.008, 0.008]
         ) 
         self.ee_pose_limit_max = self.target_ee_pose + np.array(
-            [0.1, 0.1, 0.1, 0.003, 0.003, 0.003]
+            [0.15, 0.15, 0.1, 0.008, 0.008, 0.008]
         )
 
 

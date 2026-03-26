@@ -171,7 +171,11 @@ class DexHandIntervention(gym.ActionWrapper):
         if time.time() - self._last_intervene < self._timeout:
             return expert_action, True
 
-        return action, False
+        # Timeout expired — use policy arm action but keep hand frozen
+        # so the hand does not snap to the policy's (possibly zero) target.
+        fallback = np.array(action, dtype=np.float64)
+        fallback[6:] = self._hand_current
+        return fallback, False
 
     def step(self, action):
         new_action, replaced = self.action(action)
