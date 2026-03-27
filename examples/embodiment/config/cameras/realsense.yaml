@@ -21,8 +21,8 @@ camera_defaults:
   enable_depth: false
 
 overrides:
-  "105322251046":
-    crop_region: [0.2, 0.15, 0.65, 0.55]
+  "102422076211":
+    crop_region: [0.1, 0.3, 0.55, 0.75]
     name: "global"
   "218722271009":
     name: "wrist_1"
