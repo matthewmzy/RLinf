@@ -59,6 +59,7 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
         self.alpha_optimizer = None
         self.update_step = 0
         self.enable_drq = bool(getattr(self.cfg.actor, "enable_drq", False))
+        self._cached_rl_action_mask = None
 
     def init_worker(self):
         self.setup_model_and_optimizer(initialize_target=True)
@@ -137,10 +138,16 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             dtype=self.torch_dtype,
         )
         if alpha_type != "fixed_alpha":
-            self.target_entropy = self.cfg.algorithm.entropy_tuning.get(
-                "target_entropy",
-                -self.cfg.actor.model.action_dim,
+            target_entropy_cfg = self.cfg.algorithm.entropy_tuning.get(
+                "target_entropy", None
             )
+            if target_entropy_cfg in (None, "auto"):
+                if hasattr(module, "get_sac_target_entropy"):
+                    self.target_entropy = float(module.get_sac_target_entropy())
+                else:
+                    self.target_entropy = -float(self.cfg.actor.model.action_dim)
+            else:
+                self.target_entropy = float(target_entropy_cfg)
 
             self.alpha_optimizer = torch.optim.Adam(
                 self.entropy_temp.parameters(),
@@ -226,6 +233,9 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             min_replay_buffer_size=self.cfg.algorithm.replay_buffer.min_buffer_size,
             min_demo_buffer_size=min_demo_buffer_size,
             prefetch_size=self.cfg.algorithm.replay_buffer.get("prefetch_size", 10),
+            allow_replay_only_until_demo_ready=self.cfg.algorithm.get(
+                "demo_buffer", {}
+            ).get("allow_replay_only_until_ready", False),
         )
         self.buffer_dataloader = DataLoader(
             self.buffer_dataset,
@@ -326,18 +336,132 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             trajectory: Trajectory = await input_channel.get(async_op=True).async_wait()
             recv_list.append(trajectory)
 
-        self.replay_buffer.add_trajectories(recv_list)
+        replay_traj_list = []
+        for traj in recv_list:
+            assert isinstance(traj, Trajectory)
+            valid_trajs = traj.extract_valid_traj()
+            if valid_trajs is not None:
+                replay_traj_list.extend(valid_trajs)
+
+        if len(replay_traj_list) > 0:
+            self.replay_buffer.add_trajectories(replay_traj_list)
 
         if self.demo_buffer is not None:
             intervene_traj_list = []
-            for traj in recv_list:
-                assert isinstance(traj, Trajectory)
+            for traj in replay_traj_list:
                 intervene_trajs = traj.extract_intervene_traj()
                 if intervene_trajs is not None:
                     intervene_traj_list.extend(intervene_trajs)
 
             if len(intervene_traj_list) > 0:
                 self.demo_buffer.add_trajectories(intervene_traj_list)
+
+    def _build_rl_action_mask(self) -> torch.Tensor | None:
+        if self.cfg.actor.model.get("model_type", None) != "psi_policy":
+            return None
+
+        mask_cfg = self.cfg.actor.model.get("rl_action_mask", None)
+        if mask_cfg is None or not bool(mask_cfg.get("enabled", False)):
+            return None
+
+        action_dim = int(self.cfg.actor.model.action_dim)
+        state_split = self.cfg.actor.model.state_split
+        group_ranges = {
+            "all": [(0, action_dim)],
+            "arms": [
+                tuple(int(v) for v in state_split["left_arm"]),
+                tuple(int(v) for v in state_split["right_arm"]),
+            ],
+            "hands": [
+                tuple(int(v) for v in state_split["left_hand"]),
+                tuple(int(v) for v in state_split["right_hand"]),
+            ],
+            "left_arm": [tuple(int(v) for v in state_split["left_arm"])],
+            "right_arm": [tuple(int(v) for v in state_split["right_arm"])],
+            "left_hand": [tuple(int(v) for v in state_split["left_hand"])],
+            "right_hand": [tuple(int(v) for v in state_split["right_hand"])],
+        }
+
+        active_groups = mask_cfg.get("active_groups", ["all"])
+        if active_groups is None:
+            active_groups = []
+        elif isinstance(active_groups, str):
+            active_groups = [active_groups]
+        else:
+            active_groups = list(active_groups)
+
+        active_indices = mask_cfg.get("active_indices", [])
+        if active_indices is None:
+            active_indices = []
+        elif isinstance(active_indices, int):
+            active_indices = [active_indices]
+        else:
+            active_indices = list(active_indices)
+
+        mask = torch.zeros(action_dim, dtype=torch.bool)
+        for group_name in active_groups:
+            if group_name not in group_ranges:
+                valid_names = ", ".join(sorted(group_ranges))
+                raise ValueError(
+                    f"Unsupported rl_action_mask active group '{group_name}'. "
+                    f"Valid groups: {valid_names}"
+                )
+            for start, end in group_ranges[group_name]:
+                mask[start:end] = True
+
+        for index in active_indices:
+            index = int(index)
+            if not 0 <= index < action_dim:
+                raise ValueError(
+                    f"rl_action_mask index {index} is out of range for action_dim={action_dim}."
+                )
+            mask[index] = True
+
+        if not mask.any():
+            raise ValueError(
+                "rl_action_mask enabled=True but no action dimensions were selected."
+            )
+        return mask
+
+    def _get_rl_action_mask_for_actions(
+        self, reference: torch.Tensor
+    ) -> torch.Tensor | None:
+        if self._cached_rl_action_mask is None:
+            self._cached_rl_action_mask = self._build_rl_action_mask()
+        if self._cached_rl_action_mask is None:
+            return None
+        return self._cached_rl_action_mask.to(
+            device=reference.device, dtype=reference.dtype
+        )
+
+    def _project_actions_to_reset_pose(
+        self, actions: torch.Tensor, obs: dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        rl_action_mask = self._get_rl_action_mask_for_actions(actions)
+        if rl_action_mask is None:
+            return actions
+
+        action_dim = int(self.cfg.actor.model.action_dim)
+        if actions.shape[-1] != action_dim:
+            raise ValueError(
+                f"Expected actions.shape[-1] == {action_dim} for rl_action_mask, "
+                f"got {actions.shape[-1]}."
+            )
+
+        reset_states = obs.get("reset_states")
+        if reset_states is None:
+            raise ValueError(
+                "rl_action_mask critic projection requires curr_obs['reset_states']."
+            )
+        if reset_states.dim() == 1:
+            reset_states = reset_states.unsqueeze(0)
+
+        reset_action = reset_states[..., :action_dim].to(
+            device=actions.device, dtype=actions.dtype
+        )
+        while reset_action.dim() < actions.dim():
+            reset_action = reset_action.unsqueeze(1)
+        return actions * rl_action_mask + reset_action * (1.0 - rl_action_mask)
 
     @Worker.timer("forward_critic")
     def forward_critic(self, batch):
@@ -358,7 +482,7 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
 
         curr_obs = batch["curr_obs"]
         next_obs = batch["next_obs"]
-        actions = batch["actions"]
+        actions = self._project_actions_to_reset_pose(batch["actions"], curr_obs)
 
         with torch.no_grad():
             kwargs = {}

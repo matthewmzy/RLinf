@@ -68,6 +68,7 @@ class RealWorldEnv(gym.Env):
         self._is_start = True
         self._init_metrics()
         self._elapsed_steps = np.zeros(self.num_envs, dtype=np.int32)
+        self.reset_states = None
         self._init_reset_state_ids()
 
     def _create_env(self, env_idx: int):
@@ -195,11 +196,24 @@ class RealWorldEnv(gym.Env):
         infos["episode"] = to_tensor(episode_info)
         return infos
 
+    def _get_reset_states_for_obs(self, states: torch.Tensor) -> torch.Tensor:
+        if self.reset_states is None:
+            return states.clone()
+        return self.reset_states.clone()
+
+    def _update_reset_states(self, states: torch.Tensor, env_idx=None) -> None:
+        del env_idx
+        self.reset_states = states.clone()
+
     def reset(self, *, reset_state_ids=None, seed=None, options=None, env_idx=None):
         # TODO: handle partial reset
         raw_obs, infos = self.env.reset(seed=seed, options=options)
 
         extracted_obs = self._wrap_obs(raw_obs)
+        self._update_reset_states(extracted_obs["states"], env_idx=env_idx)
+        extracted_obs["reset_states"] = self._get_reset_states_for_obs(
+            extracted_obs["states"]
+        )
         if env_idx is not None:
             self._reset_metrics(env_idx)
         else:
@@ -236,6 +250,7 @@ class RealWorldEnv(gym.Env):
             obs["extra_view_images"] = np.stack(list(raw_images.values()), axis=1)
 
         obs = to_tensor(obs)
+        obs["reset_states"] = self._get_reset_states_for_obs(obs["states"])
         obs["task_descriptions"] = self.task_descriptions
         return obs
 
@@ -254,6 +269,9 @@ class RealWorldEnv(gym.Env):
             for env_id in range(self.num_envs):
                 if infos["intervene_action"][env_id] is not None:
                     intervene_flag[env_id] = True
+        data_valid = np.ones(self.num_envs, dtype=bool)
+        if "data_valid" in infos:
+            data_valid = np.asarray(infos["data_valid"], dtype=bool).copy()
 
         infos = self._record_metrics(step_reward, terminations, intervene_flag, infos)
         if self.ignore_terminations:
@@ -268,6 +286,7 @@ class RealWorldEnv(gym.Env):
                     intervene_action[env_id] = env_intervene_action.copy()
         infos["intervene_action"] = to_tensor(intervene_action)
         infos["intervene_flag"] = to_tensor(intervene_flag)
+        infos["data_valid"] = to_tensor(data_valid)
 
         dones = terminations | truncations
         _auto_reset = auto_reset and self.auto_reset
@@ -294,6 +313,7 @@ class RealWorldEnv(gym.Env):
 
         raw_chunk_intervene_actions = []
         raw_chunk_intervene_flag = []
+        raw_chunk_data_valid = []
         for i in range(chunk_size):
             actions = chunk_actions[:, i]
             extracted_obs, step_reward, terminations, truncations, infos = self.step(
@@ -304,6 +324,8 @@ class RealWorldEnv(gym.Env):
             if "intervene_action" in infos:
                 raw_chunk_intervene_actions.append(infos["intervene_action"])
                 raw_chunk_intervene_flag.append(infos["intervene_flag"])
+            if "data_valid" in infos:
+                raw_chunk_data_valid.append(infos["data_valid"])
 
             chunk_rewards.append(step_reward)
             raw_chunk_terminations.append(terminations)
@@ -327,6 +349,8 @@ class RealWorldEnv(gym.Env):
                 raw_chunk_intervene_actions, dim=1
             ).reshape(self.num_envs, -1)
             infos_last["intervene_flag"] = torch.stack(raw_chunk_intervene_flag, dim=1)
+        if raw_chunk_data_valid:
+            infos_last["data_valid"] = torch.stack(raw_chunk_data_valid, dim=1)
             infos_list[-1] = infos_last
 
         if past_dones.any() and self.auto_reset:

@@ -316,6 +316,7 @@ class EnvWorker(Worker):
             truncations=chunk_truncations,
             intervene_actions=intervene_actions,
             intervene_flags=intervene_flags,
+            transition_valids=infos["data_valid"] if "data_valid" in infos else None,
         )
         return env_output, env_info
 
@@ -605,6 +606,7 @@ class EnvWorker(Worker):
                     else None,
                     intervene_actions=None,
                     intervene_flags=None,
+                    transition_valids=None,
                 )
                 env_outputs.append(env_output)
         else:
@@ -621,6 +623,7 @@ class EnvWorker(Worker):
                     truncations=truncations,
                     intervene_actions=self.last_intervened_info_list[stage_id][0],
                     intervene_flags=self.last_intervened_info_list[stage_id][1],
+                    transition_valids=None,
                 )
                 env_outputs.append(env_output)
 
@@ -744,7 +747,9 @@ class EnvWorker(Worker):
                             else env_output.obs
                         )
                         self.rollout_results[stage_id].append_transitions(
-                            curr_obs, next_obs
+                            curr_obs,
+                            next_obs,
+                            transition_valids=env_output.transition_valids,
                         )
 
                     env_outputs[stage_id] = env_output

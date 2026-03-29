@@ -57,6 +57,7 @@ class EnvOutput:
 
     intervene_actions: Optional[torch.Tensor] = None  # [B]
     intervene_flags: Optional[torch.Tensor] = None  # [B]
+    transition_valids: Optional[torch.Tensor] = None  # [B]
 
     def __post_init__(self):
         self.obs = put_tensor_device(self.obs, "cpu")
@@ -87,6 +88,11 @@ class EnvOutput:
         self.intervene_flags = (
             self.intervene_flags.cpu().contiguous()
             if self.intervene_flags is not None
+            else None
+        )
+        self.transition_valids = (
+            self.transition_valids.cpu().contiguous()
+            if self.transition_valids is not None
             else None
         )
 
@@ -226,6 +232,11 @@ class EnvOutput:
             allow_partial_none=True,
             fill_value=False,
         )
+        merged_transition_valids = _merge_optional_tensor_field(
+            "transition_valids",
+            allow_partial_none=True,
+            fill_value=True,
+        )
         # turn to EnvOutput and turn to dict to call post init for tensor processing
         return EnvOutput(
             obs=merged_obs,
@@ -236,6 +247,7 @@ class EnvOutput:
             rewards=merged_rewards,
             intervene_actions=merged_intervene_actions,
             intervene_flags=merged_intervene_flags,
+            transition_valids=merged_transition_valids,
         ).to_dict()
 
     def to_dict(self) -> dict[str, Any]:
@@ -253,6 +265,7 @@ class EnvOutput:
         env_output_dict["rewards"] = self.rewards
         env_output_dict["intervene_actions"] = self.intervene_actions
         env_output_dict["intervene_flags"] = self.intervene_flags
+        env_output_dict["transition_valids"] = self.transition_valids
 
         return env_output_dict
 
@@ -373,6 +386,7 @@ class Trajectory:
     model_weights_id: str = ""  # str(uuid(versions))
     actions: torch.Tensor = None
     intervene_flags: torch.Tensor = None
+    transition_valids: torch.Tensor = None
     rewards: torch.Tensor = None
     terminations: torch.Tensor = None
     truncations: torch.Tensor = None
@@ -496,6 +510,79 @@ class Trajectory:
 
         return filtered_trajectories if filtered_trajectories else None
 
+    def extract_valid_traj(self):
+        if self.transition_valids is None:
+            return [self]
+
+        mask = self.transition_valids.to(dtype=torch.bool)
+        if mask.dim() == 1:
+            mask = mask.unsqueeze(-1)
+        assert mask.dim() == 2, (
+            f"Expected 2D transition_valids mask, got {mask.shape=}"
+        )
+        if (~mask).all():
+            return None
+        if mask.all():
+            return [self]
+
+        traj_len = int(mask.shape[0])
+
+        def apply_mask(tensor, i):
+            return tensor[:, i][mask[:, i]].unsqueeze(1) if tensor is not None else None
+
+        def apply_mask_to_dict(d, i):
+            return (
+                {k: v[:, i][mask[:, i]].unsqueeze(1) for k, v in d.items()} if d else {}
+            )
+
+        filtered_trajectories = []
+        for i in range(mask.shape[1]):
+            if not mask[:, i].any():
+                continue
+
+            actions = apply_mask(self.actions, i)
+            intervene_flags = apply_mask(self.intervene_flags, i)
+            transition_valids = apply_mask(self.transition_valids, i)
+            rewards = apply_mask(self.rewards, i)
+            prev_logprobs = apply_mask(self.prev_logprobs, i)
+            prev_values = apply_mask(self.prev_values, i)
+            versions = apply_mask(self.versions, i)
+
+            forward_inputs = apply_mask_to_dict(self.forward_inputs, i)
+            curr_obs = apply_mask_to_dict(self.curr_obs, i)
+            next_obs = apply_mask_to_dict(self.next_obs, i)
+
+            terminations = truncations = dones = None
+            if self.terminations is not None:
+                field_mask = self._generate_field_mask(
+                    self.terminations[:, i : i + 1], mask[:, i], traj_len
+                )
+                terminations = self.terminations[:, i : i + 1][field_mask]
+                truncations = self.truncations[:, i : i + 1][field_mask]
+                dones = self.dones[:, i : i + 1][field_mask]
+
+            filtered_trajectories.append(
+                Trajectory(
+                    max_episode_length=self.max_episode_length,
+                    model_weights_id=self.model_weights_id,
+                    actions=actions,
+                    intervene_flags=intervene_flags,
+                    transition_valids=transition_valids,
+                    rewards=rewards,
+                    terminations=terminations,
+                    truncations=truncations,
+                    dones=dones,
+                    prev_logprobs=prev_logprobs,
+                    prev_values=prev_values,
+                    versions=versions,
+                    forward_inputs=forward_inputs,
+                    curr_obs=curr_obs,
+                    next_obs=next_obs,
+                )
+            )
+
+        return filtered_trajectories if filtered_trajectories else None
+
 
 @dataclass(kw_only=True)
 class EmbodiedRolloutResult:
@@ -531,6 +618,7 @@ class EmbodiedRolloutResult:
 
     curr_obs: list[dict[str, Any]] = field(default_factory=list)  # trajectory_length
     next_obs: list[dict[str, Any]] = field(default_factory=list)  # trajectory_length
+    transition_valids: list[torch.Tensor] = field(default_factory=list)  # trajectory_length
 
     def append_step_result(self, result: ChunkStepResult):
         if result.actions is not None:
@@ -613,7 +701,7 @@ class EmbodiedRolloutResult:
                     )
                 last_fi.pop("model_action", None)
 
-    def append_transitions(self, curr_obs=None, next_obs=None):
+    def append_transitions(self, curr_obs=None, next_obs=None, transition_valids=None):
         assert curr_obs is not None and next_obs is not None
         if "task_descriptions" in curr_obs:
             curr_obs.pop("task_descriptions")
@@ -621,6 +709,8 @@ class EmbodiedRolloutResult:
             next_obs.pop("task_descriptions")
         self.curr_obs.append(curr_obs)
         self.next_obs.append(next_obs)
+        if transition_valids is not None:
+            self.transition_valids.append(transition_valids.cpu().contiguous())
 
     def to_trajectory(self) -> Trajectory:
         # return [trajectory_length, B, ...]
@@ -632,6 +722,10 @@ class EmbodiedRolloutResult:
         if len(self.intervene_flags) > 0:
             trajectory.intervene_flags = (
                 torch.stack(self.intervene_flags, dim=0).cpu().contiguous()
+            )
+        if len(self.transition_valids) > 0:
+            trajectory.transition_valids = (
+                torch.stack(self.transition_valids, dim=0).cpu().contiguous()
             )
         if len(self.rewards) > 0:
             trajectory.rewards = torch.stack(self.rewards, dim=0).cpu().contiguous()

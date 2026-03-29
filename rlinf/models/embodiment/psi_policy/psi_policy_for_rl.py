@@ -71,10 +71,17 @@ class PsiPolicyConfig:
 
     state_split: dict[str, list[int]] = field(
         default_factory=lambda: {
-            "right_arm": [0, 7],
-            "left_arm": [7, 14],
+            "right_arm": [7, 14],
+            "left_arm": [0, 7],
             "left_hand": [14, 20],
             "right_hand": [20, 26],
+        }
+    )
+    rl_action_mask: dict[str, Any] = field(
+        default_factory=lambda: {
+            "enabled": False,
+            "active_groups": ["all"],
+            "active_indices": [],
         }
     )
 
@@ -100,6 +107,7 @@ class PsiPolicyConfig:
         self.num_q_heads = int(self.num_q_heads)
         self.obs_horizon = int(self.obs_horizon)
         self.fallback_hidden_size = int(self.fallback_hidden_size)
+        self.rl_action_mask = _normalize_rl_action_mask_cfg(self.rl_action_mask)
         if self.action_dim != 26:
             raise ValueError(
                 f"PsiPolicyForRL currently only supports 26-dim rgb_state policy, got {self.action_dim}."
@@ -112,6 +120,89 @@ class PsiPolicyConfig:
             raise ValueError(
                 "checkpoint_model_key must be either 'model' or 'ema_model'."
             )
+
+
+def _normalize_rl_action_mask_cfg(mask_cfg: Optional[dict[str, Any]]) -> dict[str, Any]:
+    default_cfg = {
+        "enabled": False,
+        "active_groups": ["all"],
+        "active_indices": [],
+    }
+    if mask_cfg is None:
+        return default_cfg
+
+    if hasattr(mask_cfg, "items"):
+        raw_cfg = dict(mask_cfg)
+    else:
+        raise TypeError(
+            f"rl_action_mask must be a mapping or None, got {type(mask_cfg)}"
+        )
+
+    cfg = default_cfg.copy()
+    cfg.update(raw_cfg)
+    cfg["enabled"] = bool(cfg.get("enabled", False))
+
+    active_groups = cfg.get("active_groups", ["all"])
+    if active_groups is None:
+        active_groups = []
+    elif isinstance(active_groups, str):
+        active_groups = [active_groups]
+    else:
+        active_groups = list(active_groups)
+    cfg["active_groups"] = [str(group) for group in active_groups]
+
+    active_indices = cfg.get("active_indices", [])
+    if active_indices is None:
+        active_indices = []
+    elif isinstance(active_indices, int):
+        active_indices = [active_indices]
+    else:
+        active_indices = list(active_indices)
+    cfg["active_indices"] = [int(index) for index in active_indices]
+    return cfg
+
+
+def _build_rl_action_mask(
+    action_dim: int, state_split: dict[str, list[int]], mask_cfg: dict[str, Any]
+) -> tuple[torch.Tensor, list[int]]:
+    if not mask_cfg.get("enabled", False):
+        all_indices = list(range(action_dim))
+        return torch.ones(action_dim, dtype=torch.bool), all_indices
+
+    group_ranges = {
+        "all": [(0, action_dim)],
+        "arms": [tuple(state_split["left_arm"]), tuple(state_split["right_arm"])],
+        "hands": [tuple(state_split["left_hand"]), tuple(state_split["right_hand"])],
+        "left_arm": [tuple(state_split["left_arm"])],
+        "right_arm": [tuple(state_split["right_arm"])],
+        "left_hand": [tuple(state_split["left_hand"])],
+        "right_hand": [tuple(state_split["right_hand"])],
+    }
+    mask = torch.zeros(action_dim, dtype=torch.bool)
+
+    for group_name in mask_cfg.get("active_groups", []):
+        if group_name not in group_ranges:
+            valid_names = ", ".join(sorted(group_ranges))
+            raise ValueError(
+                f"Unsupported rl_action_mask active group '{group_name}'. "
+                f"Valid groups: {valid_names}"
+            )
+        for start, end in group_ranges[group_name]:
+            mask[start:end] = True
+
+    for index in mask_cfg.get("active_indices", []):
+        if not 0 <= index < action_dim:
+            raise ValueError(
+                f"rl_action_mask index {index} is out of range for action_dim={action_dim}."
+            )
+        mask[index] = True
+
+    active_indices = torch.nonzero(mask, as_tuple=False).squeeze(-1).tolist()
+    if len(active_indices) == 0:
+        raise ValueError(
+            "rl_action_mask enabled=True but no action dimensions were selected."
+        )
+    return mask, active_indices
 
 
 def _build_shape_meta(cfg: PsiPolicyConfig) -> dict[str, Any]:
@@ -268,6 +359,12 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         self.normalizer = self.policy.normalizer
         self.action_dim = int(self.policy.action_dim)
         self.action_horizon = int(self.policy.action_horizon)
+        rl_action_mask, active_rl_action_indices = _build_rl_action_mask(
+            self.action_dim, self.cfg.state_split, self.cfg.rl_action_mask
+        )
+        self.register_buffer("rl_action_mask", rl_action_mask, persistent=False)
+        self.active_rl_action_indices = active_rl_action_indices
+        self.active_rl_action_dim = len(active_rl_action_indices)
 
         obs_shape, _ = self.obs_encoder.output_shape()
         self.n_emb = int(obs_shape[-1])
@@ -283,11 +380,15 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         total_params = sum(p.numel() for p in self.parameters())
         q_params = sum(p.numel() for p in self.q_head.parameters()) if cfg.add_q_head else 0
         logger.info(
-            "PsiPolicyForRL ready: total=%.1fM, q_head=%.1fM, action_horizon=%s, num_action_chunks=%s",
+            "PsiPolicyForRL ready: total=%.1fM, q_head=%.1fM, action_horizon=%s, "
+            "num_action_chunks=%s, rl_action_dims=%s/%s, rl_action_indices=%s",
             total_params / 1e6,
             q_params / 1e6,
             self.action_horizon,
             self.cfg.num_action_chunks,
+            self.active_rl_action_dim,
+            self.action_dim,
+            self.active_rl_action_indices,
         )
 
     @property
@@ -297,6 +398,9 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
     @property
     def device(self):
         return next(self.parameters()).device
+
+    def get_sac_target_entropy(self) -> float:
+        return -float(self.active_rl_action_dim)
 
     def _build_or_load_policy(self) -> PsiPolicy:
         if self.cfg.model_path:
@@ -437,6 +541,7 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
     def forward(self, forward_type=ForwardType.DEFAULT, **kwargs):
         obs = kwargs.get("obs")
         if obs is not None:
+            kwargs["raw_obs"] = obs
             kwargs["obs"] = self.preprocess_env_obs(obs)
         next_obs = kwargs.get("next_obs")
         if next_obs is not None:
@@ -466,20 +571,77 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             gen_attn_map=False,
         )[0]
 
-    def sac_forward(self, obs, **kwargs):
+    def _get_rl_action_mask(self, reference: torch.Tensor) -> torch.Tensor:
+        return self.rl_action_mask.to(device=reference.device, dtype=reference.dtype)
+
+    def _sample_masked_action(self, action_mean_norm: torch.Tensor, noise_std: float):
+        rl_action_mask = self._get_rl_action_mask(action_mean_norm)
+        sampled_action_norm = action_mean_norm + noise_std * torch.randn_like(
+            action_mean_norm
+        ) * rl_action_mask
+        detached_frozen_action_norm = (
+            sampled_action_norm * rl_action_mask
+            + sampled_action_norm.detach() * (1.0 - rl_action_mask)
+        )
+        log_prob = (
+            Normal(action_mean_norm.detach(), noise_std)
+            .log_prob(sampled_action_norm.detach())
+            .mul(rl_action_mask)
+            .sum(dim=-1)
+        )
+        return sampled_action_norm, detached_frozen_action_norm, log_prob
+
+    def _sample_masked_action_chunks(
+        self, action_chunks_mean_norm: torch.Tensor, noise_std: float
+    ) -> torch.Tensor:
+        rl_action_mask = self._get_rl_action_mask(action_chunks_mean_norm).view(1, 1, -1)
+        return action_chunks_mean_norm + noise_std * torch.randn_like(
+            action_chunks_mean_norm
+        ) * rl_action_mask
+
+    def _extract_reset_action_reference(
+        self, env_obs: Optional[dict[str, torch.Tensor]], reference: torch.Tensor
+    ) -> torch.Tensor:
+        if env_obs is None:
+            raise ValueError(
+                "rl_action_mask reset-pose override requires raw env_obs, but got None."
+            )
+        reset_states = env_obs.get("reset_states")
+        if reset_states is None:
+            raise ValueError(
+                "rl_action_mask reset-pose override requires env_obs['reset_states']."
+            )
+        if reset_states.dim() == 1:
+            reset_states = reset_states.unsqueeze(0)
+        reset_action = reset_states[..., : self.action_dim].to(
+            device=reference.device, dtype=reference.dtype
+        )
+        return reset_action
+
+    def _apply_reset_pose_mask(
+        self, action: torch.Tensor, env_obs: Optional[dict[str, torch.Tensor]]
+    ) -> torch.Tensor:
+        if self.active_rl_action_dim == self.action_dim:
+            return action
+        rl_action_mask = self._get_rl_action_mask(action)
+        reset_action = self._extract_reset_action_reference(env_obs, action)
+        while reset_action.dim() < action.dim():
+            reset_action = reset_action.unsqueeze(1)
+        return action * rl_action_mask + reset_action * (1.0 - rl_action_mask)
+
+    def sac_forward(self, obs, raw_obs=None, **kwargs):
         del kwargs
         cond_tokens, obs_feature = self.encode_obs(obs)
         action_chunks_mean_norm = self._sample_action_chunks(cond_tokens, training=True)
         action_mean_norm = action_chunks_mean_norm[:, 0, :]
         noise_std = self.cfg.noise_std_train
-        eps = torch.randn_like(action_mean_norm)
-        action_norm = action_mean_norm + noise_std * eps
-        log_prob = (
-            Normal(action_mean_norm.detach(), noise_std)
-            .log_prob(action_norm.detach())
-            .sum(dim=-1)
+        _, action_norm_for_q, log_prob = self._sample_masked_action(
+            action_mean_norm, noise_std
         )
-        action = self.normalizer["action"].unnormalize(action_norm.unsqueeze(1)).squeeze(1)
+        action = self.normalizer["action"].unnormalize(
+            action_norm_for_q.unsqueeze(1)
+        ).squeeze(1)
+        action = self._apply_reset_pose_mask(action, raw_obs)
         return action, log_prob, obs_feature
 
     def sac_q_forward(
@@ -502,18 +664,22 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         }
         if "extra_view_images" in forward_inputs:
             obs["extra_view_images"] = forward_inputs["extra_view_images"]
+        if "reset_states" in forward_inputs:
+            obs["reset_states"] = forward_inputs["reset_states"]
         obs = self.preprocess_env_obs(obs)
         cond_tokens, _ = self.encode_obs(obs)
         action_chunks_mean_norm = self._sample_action_chunks(cond_tokens, training=False)
         noise_std = self.cfg.noise_std_rollout
-        action_chunks_norm = action_chunks_mean_norm + noise_std * torch.randn_like(
-            action_chunks_mean_norm
+        action_chunks_norm = self._sample_masked_action_chunks(
+            action_chunks_mean_norm, noise_std
         )
         action_norm = action_chunks_norm[:, 0, :]
         action = self.normalizer["action"].unnormalize(action_norm.unsqueeze(1)).squeeze(1)
+        action = self._apply_reset_pose_mask(action, forward_inputs)
         log_prob = (
             Normal(action_chunks_mean_norm[:, 0, :].detach(), noise_std)
             .log_prob(action_norm.detach())
+            .mul(self._get_rl_action_mask(action_norm))
             .sum(dim=-1)
         )
         return {"action": action, "log_prob": log_prob}
@@ -533,14 +699,16 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         cond_tokens, obs_feature = self.encode_obs(processed_obs)
         action_chunks_mean_norm = self._sample_action_chunks(cond_tokens, training=False)
         noise_std = self.cfg.noise_std_rollout
-        action_chunks_norm = action_chunks_mean_norm + noise_std * torch.randn_like(
-            action_chunks_mean_norm
+        action_chunks_norm = self._sample_masked_action_chunks(
+            action_chunks_mean_norm, noise_std
         )
         chunks_norm = action_chunks_norm[:, : self.cfg.num_action_chunks, :]
         chunk_actions = self.normalizer["action"].unnormalize(chunks_norm)
+        chunk_actions = self._apply_reset_pose_mask(chunk_actions, env_obs)
         log_prob = (
             Normal(action_chunks_mean_norm[:, 0, :].detach(), noise_std)
             .log_prob(chunks_norm[:, 0, :].detach())
+            .mul(self._get_rl_action_mask(chunks_norm[:, 0, :]))
             .sum(dim=-1)
         )
         chunk_values = torch.zeros_like(log_prob[..., :1])
@@ -548,6 +716,8 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         if return_obs:
             forward_inputs["main_images"] = env_obs["main_images"]
             forward_inputs["states"] = env_obs["states"]
+            if "reset_states" in env_obs:
+                forward_inputs["reset_states"] = env_obs["reset_states"]
             if "extra_view_images" in env_obs:
                 forward_inputs["extra_view_images"] = env_obs["extra_view_images"]
         result = {

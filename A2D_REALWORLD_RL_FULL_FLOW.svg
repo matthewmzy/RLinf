@@ -1,0 +1,379 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2600" height="1880" viewBox="0 0 2600 1880">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#f8f4ea"/>
+      <stop offset="100%" stop-color="#eef3f1"/>
+    </linearGradient>
+    <linearGradient id="sectionA" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0%" stop-color="#f7e6d2"/>
+      <stop offset="100%" stop-color="#fbeedc"/>
+    </linearGradient>
+    <linearGradient id="sectionB" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0%" stop-color="#dfeee9"/>
+      <stop offset="100%" stop-color="#eaf4f1"/>
+    </linearGradient>
+    <linearGradient id="sectionC" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0%" stop-color="#e5ecf5"/>
+      <stop offset="100%" stop-color="#edf3fa"/>
+    </linearGradient>
+    <linearGradient id="sectionD" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0%" stop-color="#f3ead8"/>
+      <stop offset="100%" stop-color="#fbf6ec"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-opacity="0.12" flood-color="#18222c"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#295a66"/>
+    </marker>
+    <marker id="arrowSoft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a5a2d"/>
+    </marker>
+    <style>
+      .frame { fill: url(#bg); }
+      .section { stroke: #38505c; stroke-width: 2; rx: 28; ry: 28; filter: url(#shadow); }
+      .section-title { font: 700 34px 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; fill: #17303a; }
+      .title { font: 800 42px 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; fill: #152a33; }
+      .subtitle { font: 500 20px 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; fill: #395160; }
+      .box { fill: #ffffff; stroke: #45606a; stroke-width: 2; rx: 22; ry: 22; filter: url(#shadow); }
+      .box-orange { fill: #fff6ea; stroke: #8d5c2b; }
+      .box-green { fill: #f2fbf8; stroke: #2f6c5d; }
+      .box-blue { fill: #f4f8fd; stroke: #3f608a; }
+      .box-gold { fill: #fffaf0; stroke: #96723b; }
+      .box-title { font: 700 24px 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; fill: #18313a; }
+      .box-sub { font: 600 18px 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; fill: #244651; }
+      .body { font: 500 17px 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; fill: #294551; }
+      .small { font: 500 15px 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; fill: #4a6671; }
+      .tiny { font: 500 13px 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; fill: #57727d; }
+      .legend-text { font: 600 16px 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; fill: #18313a; }
+      .formula { font: 600 15px 'SF Mono', 'Menlo', 'Consolas', monospace; fill: #203945; }
+      .arrow { stroke: #295a66; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+      .arrow-soft { stroke: #8a5a2d; stroke-width: 4; fill: none; marker-end: url(#arrowSoft); }
+      .dashed { stroke-dasharray: 11 8; }
+      .divider { stroke: #7c9198; stroke-width: 2; stroke-dasharray: 6 8; }
+      .pill { rx: 16; ry: 16; stroke-width: 2; }
+      .step { fill: #ffffff; stroke: #4a6570; stroke-width: 2; rx: 18; ry: 18; }
+      .step-num { font: 700 20px 'SF Mono', 'Menlo', 'Consolas', monospace; fill: #ffffff; }
+      .step-title { font: 700 18px 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; fill: #1c3843; }
+      .step-body { font: 500 15px 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; fill: #425d67; }
+    </style>
+  </defs>
+
+  <rect class="frame" x="0" y="0" width="2600" height="1880"/>
+
+  <text class="title" x="56" y="70">A2D 真机强化学习全流程图</text>
+  <text class="subtitle" x="58" y="104">覆盖 A2D 官方 docker / gRPC rollout server / RLinf 环境封装 / psi-policy 推理 / HIL 接管 / SAC 微调 / reward / replay-demo buffer / checkpoint 同步</text>
+
+  <rect x="1840" y="26" width="706" height="92" rx="22" ry="22" fill="#ffffff" stroke="#4b6670" stroke-width="2" filter="url(#shadow)"/>
+  <text class="box-title" x="1870" y="60">关键模式语义</text>
+  <rect x="1872" y="72" width="92" height="28" rx="14" ry="14" fill="#dff3ea" stroke="#2f6c5d" stroke-width="2"/>
+  <text class="legend-text" x="1898" y="92">0 模型</text>
+  <rect x="1986" y="72" width="108" height="28" rx="14" ry="14" fill="#fff0dc" stroke="#8d5c2b" stroke-width="2"/>
+  <text class="legend-text" x="2016" y="92">1 遥操作</text>
+  <rect x="2118" y="72" width="90" height="28" rx="14" ry="14" fill="#ece6d8" stroke="#8c7b59" stroke-width="2"/>
+  <text class="legend-text" x="2142" y="92">99 空闲</text>
+  <rect x="2234" y="72" width="132" height="28" rx="14" ry="14" fill="#edf4fb" stroke="#4f7395" stroke-width="2"/>
+  <text class="legend-text" x="2260" y="92">有效数据入池</text>
+  <rect x="2386" y="72" width="132" height="28" rx="14" ry="14" fill="#f7ebe4" stroke="#97674d" stroke-width="2"/>
+  <text class="legend-text" x="2413" y="92">人工接管专属</text>
+
+  <rect class="section" x="40" y="132" width="2520" height="346" fill="url(#sectionA)"/>
+  <text class="section-title" x="68" y="176">1. 物理系统与外部输入层</text>
+
+  <rect class="box box-orange" x="80" y="206" width="250" height="102"/>
+  <text class="box-title" x="106" y="240">操作者</text>
+  <text class="body" x="106" y="268">观察任务结果</text>
+  <text class="body" x="106" y="292">切换控制模式 / 必要时接管</text>
+
+  <rect class="box box-orange" x="80" y="332" width="250" height="108"/>
+  <text class="box-title" x="106" y="366">键盘奖励输入</text>
+  <text class="body" x="106" y="394">a = 失败, reward -1, done</text>
+  <text class="body" x="106" y="418">b = 中性, reward 0</text>
+  <text class="body" x="106" y="442">c = 成功, reward +1, done</text>
+
+  <rect class="box box-orange" x="372" y="206" width="312" height="234"/>
+  <text class="box-title" x="398" y="240">遥操作设备 / 踏板</text>
+  <text class="body" x="398" y="268">切到 control_mode = 1 时</text>
+  <text class="body" x="398" y="292">A2D 机器人状态被遥操作覆盖</text>
+  <text class="body" x="398" y="316">RLinf 将当前状态解释为</text>
+  <text class="formula" x="398" y="344">info["intervene_action"]</text>
+  <text class="body" x="398" y="374">切换准备阶段常见为 99</text>
+  <text class="body" x="398" y="398">这些 idle 帧后续会过滤</text>
+
+  <rect class="box box-orange" x="724" y="178" width="704" height="262"/>
+  <text class="box-title" x="752" y="214">A2D 官方 docker / rollout server 所在系统</text>
+  <rect class="box" x="754" y="240" width="186" height="114"/>
+  <text class="box-sub" x="778" y="272">相机采集</text>
+  <text class="small" x="778" y="300">rgb_head</text>
+  <text class="small" x="778" y="324">rgb_left_hand</text>
+  <text class="small" x="778" y="348">rgb_right_hand</text>
+  <rect class="box" x="960" y="240" width="214" height="114"/>
+  <text class="box-sub" x="986" y="272">机器人状态</text>
+  <text class="small" x="986" y="300">arm_joint_states [14]</text>
+  <text class="small" x="986" y="324">left_hand [6], right_hand [6]</text>
+  <text class="small" x="986" y="348">waist [2], control_mode</text>
+  <rect class="box" x="1194" y="240" width="204" height="114"/>
+  <text class="box-sub" x="1219" y="272">gRPC rollout server</text>
+  <text class="small" x="1219" y="300">向外发观测</text>
+  <text class="small" x="1219" y="324">向里收绝对关节角动作</text>
+  <text class="small" x="1219" y="348">默认端口 12321</text>
+  <text class="body" x="752" y="390">控制命令执行维度是 28：waist[2] + arm[14] + left_hand[6] + right_hand[6]</text>
+  <text class="body" x="752" y="418">psi-policy 只输出 26 维 arm+hands；waist 由 RLinf 环境侧补固定值</text>
+
+  <rect class="box box-orange" x="1470" y="206" width="244" height="234"/>
+  <text class="box-title" x="1496" y="240">观测语义来源</text>
+  <text class="body" x="1496" y="268">server 发出的观测包含：</text>
+  <text class="body" x="1496" y="292">图像 + 关节状态 + control_mode</text>
+  <text class="body" x="1496" y="324">control_mode = 0</text>
+  <text class="small" x="1524" y="350">模型控制帧</text>
+  <text class="body" x="1496" y="378">control_mode = 1</text>
+  <text class="small" x="1524" y="404">人工接管帧</text>
+  <text class="body" x="1496" y="432">control_mode = 99</text>
+  <text class="small" x="1524" y="458">空闲 / 切换帧</text>
+
+  <rect class="box box-orange" x="1756" y="206" width="764" height="234"/>
+  <text class="box-title" x="1782" y="240">这一层对 RL 训练最关键的事实</text>
+  <text class="body" x="1782" y="272">1. 动作和状态本质上都是绝对关节角，所以 teleop 接管可直接变成可学习动作。</text>
+  <text class="body" x="1782" y="304">2. reward 不是 docker 内部给，而是 RLinf 侧键盘 wrapper 给稀疏成功/失败信号。</text>
+  <text class="body" x="1782" y="336">3. idle 帧不是“无害帧”，而是必须过滤，否则会污染 replay buffer。</text>
+  <text class="body" x="1782" y="368">4. 模型 rollout、teleop 接管、空闲切换都在一条真机轨迹里自然共存。</text>
+  <text class="body" x="1782" y="400">5. 你的 SAC 微调本质是“拿预训练 psi-policy 做在线真机校准”，不是从零学。</text>
+
+  <path class="arrow-soft dashed" d="M 330 257 C 345 257, 350 257, 372 257"/>
+  <path class="arrow-soft dashed" d="M 330 386 C 510 386, 590 480, 590 600"/>
+  <path class="arrow-soft dashed" d="M 684 258 C 702 258, 710 258, 724 258"/>
+  <path class="arrow-soft dashed" d="M 684 360 C 706 360, 720 360, 744 360"/>
+  <path class="arrow-soft dashed" d="M 1428 298 C 1444 298, 1456 298, 1470 298"/>
+  <path class="arrow-soft dashed" d="M 1714 322 C 1732 322, 1740 322, 1756 322"/>
+
+  <rect class="section" x="40" y="506" width="2520" height="500" fill="url(#sectionB)"/>
+  <text class="section-title" x="68" y="550">2. RLinf 环境封装与推理执行层</text>
+
+  <rect class="box box-green" x="70" y="580" width="220" height="130"/>
+  <text class="box-title" x="96" y="614">单机 Ray / 调度</text>
+  <text class="body" x="96" y="642">node_group "4090"</text>
+  <text class="body" x="96" y="666">actor + rollout</text>
+  <text class="body" x="96" y="690">node_group a2d = env</text>
+
+  <rect class="box box-green" x="320" y="566" width="418" height="178"/>
+  <text class="box-title" x="346" y="600">Env Worker + RealWorldEnv + A2DEnv</text>
+  <text class="body" x="346" y="628">1. 通过 gRPC 拉取观测</text>
+  <text class="body" x="346" y="652">2. 将 28 维动作映射回 A2D controller</text>
+  <text class="body" x="346" y="676">3. `policy_action_dim = 26` 时补 waist[2]</text>
+  <text class="body" x="346" y="700">4. `normalize_actions = False`，直接用绝对关节角</text>
+  <text class="body" x="346" y="724">5. 键盘 wrapper 在这里覆盖 reward / done</text>
+
+  <rect class="box box-green" x="772" y="566" width="392" height="194"/>
+  <text class="box-title" x="798" y="600">control_mode 解释 + 数据整理</text>
+  <text class="body" x="798" y="628">mode 0: 正常模型控制帧</text>
+  <text class="body" x="798" y="652">mode 1: 生成 intervene_action</text>
+  <text class="body" x="798" y="676">mode 99: data_valid = False</text>
+  <text class="body" x="798" y="700">多步 chunk_step 后聚合：</text>
+  <text class="small" x="826" y="726">obs / rewards / terminations / truncations</text>
+  <text class="small" x="826" y="748">intervene_action / intervene_flag / data_valid</text>
+
+  <rect class="box box-green" x="1196" y="552" width="520" height="222"/>
+  <text class="box-title" x="1222" y="586">Rollout Worker 中的 psi-policy 推理</text>
+  <text class="body" x="1222" y="614">输入：</text>
+  <text class="small" x="1250" y="640">main_images = rgb_head</text>
+  <text class="small" x="1250" y="664">extra_view_images = left/right hand</text>
+  <text class="small" x="1250" y="688">states = arm[14] + left_hand[6] + right_hand[6] + waist[2]</text>
+  <text class="body" x="1222" y="716">包装后切成 psi-policy 所需键：</text>
+  <text class="small" x="1250" y="742">left_arm / right_arm / left_hand / right_hand</text>
+  <text class="body" x="1222" y="770">加载：pretrained ckpt + normalizer.pkl</text>
+
+  <rect class="box box-green" x="1752" y="552" width="316" height="222"/>
+  <text class="box-title" x="1778" y="586">动作生成</text>
+  <text class="body" x="1778" y="614">psi-policy 预测 16-step action horizon</text>
+  <text class="body" x="1778" y="638">RLinf 执行前 4 个 chunk</text>
+  <text class="body" x="1778" y="662">rollout 噪声：</text>
+  <text class="formula" x="1778" y="690">noise_std_rollout = 0.02</text>
+  <text class="body" x="1778" y="720">输出 26 维绝对 joint action</text>
+  <text class="body" x="1778" y="744">env 侧补 waist 组成 28 维</text>
+
+  <rect class="box box-green" x="2100" y="552" width="420" height="222"/>
+  <text class="box-title" x="2126" y="586">这一层的关键行为</text>
+  <text class="body" x="2126" y="614">1. 观测尺寸统一到 psi-policy encoder 需要的格式。</text>
+  <text class="body" x="2126" y="646">2. rollout 使用预训练 actor，起步就具备 imitation 能力。</text>
+  <text class="body" x="2126" y="678">3. teleop 接管期间，info["intervene_action"] 保存“人类真正执行的动作”。</text>
+  <text class="body" x="2126" y="710">4. idle 帧在这里就标成无效，后面不会进入 replay。</text>
+  <text class="body" x="2126" y="742">5. reward / done 已被键盘 wrapper 改写，直接进入 RL 数据流。</text>
+
+  <path class="arrow" d="M 290 644 C 305 644, 308 644, 320 644"/>
+  <path class="arrow" d="M 738 654 C 754 654, 758 654, 772 654"/>
+  <path class="arrow" d="M 1164 660 C 1178 660, 1182 660, 1196 660"/>
+  <path class="arrow" d="M 1716 664 C 1732 664, 1738 664, 1752 664"/>
+  <path class="arrow" d="M 2068 664 C 2082 664, 2088 664, 2100 664"/>
+
+  <path class="arrow" d="M 1298 552 C 1298 490, 1298 470, 1298 410"/>
+  <text class="small" x="1316" y="486">读取 ckpt / normalizer，准备 rollout</text>
+
+  <path class="arrow" d="M 320 610 C 250 610, 220 610, 180 610"/>
+  <text class="tiny" x="82" y="736">Ray 只负责组件调度；A2D docker 不需要再套一层 RLinf docker</text>
+
+  <path class="arrow" d="M 330 644 C 330 484, 1200 484, 1200 352"/>
+  <text class="small" x="622" y="474">env 通过 127.0.0.1:12321 与 A2D rollout server 双向通信</text>
+
+  <path class="arrow" d="M 1752 744 C 1670 744, 1650 830, 1450 830"/>
+  <text class="small" x="1468" y="854">发回 chunk actions，A2DEnv 最终执行到真机</text>
+
+  <rect class="section" x="40" y="1034" width="2520" height="486" fill="url(#sectionC)"/>
+  <text class="section-title" x="68" y="1078">3. 训练数据流、buffer 与 SAC 更新层</text>
+
+  <rect class="box box-blue" x="72" y="1110" width="386" height="194"/>
+  <text class="box-title" x="98" y="1144">Trajectory 组装</text>
+  <text class="body" x="98" y="1172">EnvOutput / Trajectory 中包含：</text>
+  <text class="small" x="126" y="1198">curr_obs / next_obs / actions</text>
+  <text class="small" x="126" y="1222">rewards / dones / terminations / truncations</text>
+  <text class="small" x="126" y="1246">intervene_actions / intervene_flags</text>
+  <text class="small" x="126" y="1270">transition_valids</text>
+  <text class="body" x="98" y="1298">chunk 内多步帧被打平成可采样 transition</text>
+
+  <rect class="box box-blue" x="494" y="1110" width="340" height="194"/>
+  <text class="box-title" x="520" y="1144">Replay Buffer</text>
+  <text class="body" x="520" y="1172">收所有 valid transitions</text>
+  <text class="body" x="520" y="1196">来源：</text>
+  <text class="small" x="548" y="1222">模型 rollout 帧</text>
+  <text class="small" x="548" y="1246">teleop 接管帧</text>
+  <text class="body" x="520" y="1274">idle = 99 不会进入这里</text>
+  <text class="body" x="520" y="1298">min_buffer_size = 2</text>
+
+  <rect class="box box-blue" x="870" y="1110" width="342" height="194"/>
+  <text class="box-title" x="896" y="1144">Demo Buffer</text>
+  <text class="body" x="896" y="1172">只收 intervene trajectory</text>
+  <text class="body" x="896" y="1196">即人工接管片段专属数据池</text>
+  <text class="body" x="896" y="1220">allow_replay_only_until_ready = True</text>
+  <text class="small" x="924" y="1246">没有 demo 时不阻塞训练</text>
+  <text class="small" x="924" y="1270">一旦有第一批接管轨迹就开始参与混采</text>
+
+  <rect class="box box-blue" x="1248" y="1110" width="376" height="194"/>
+  <text class="box-title" x="1274" y="1144">ReplayBufferDataset 采样策略</text>
+  <text class="body" x="1274" y="1172">阶段 A：demo 未 ready</text>
+  <text class="small" x="1302" y="1198">仅从 replay_buffer 采样</text>
+  <text class="body" x="1274" y="1226">阶段 B：demo ready</text>
+  <text class="small" x="1302" y="1252">replay 50% + demo 50% 混采</text>
+  <text class="body" x="1274" y="1280">结果：模型可先自己 rollout 学习，</text>
+  <text class="body" x="1274" y="1304">人类一介入，采样分布自动更偏向干预片段</text>
+
+  <rect class="box box-blue" x="1660" y="1084" width="558" height="260"/>
+  <text class="box-title" x="1686" y="1118">Embodied SAC Worker（Actor + Critic + Alpha）</text>
+  <text class="body" x="1686" y="1148">预训练初始化：</text>
+  <text class="small" x="1714" y="1174">actor = psi-policy ckpt</text>
+  <text class="small" x="1714" y="1198">critic = MultiQHead(obs_feature, action)</text>
+  <text class="body" x="1686" y="1228">训练噪声：</text>
+  <text class="formula" x="1714" y="1254">noise_std_train = 0.3</text>
+  <text class="body" x="1686" y="1284">关键保护：</text>
+  <text class="small" x="1714" y="1310">train_actor_steps = 20，先让 critic 看一批真机轨迹</text>
+  <text class="small" x="1714" y="1334">backup_entropy = False，更接近真机 RLPD 风格</text>
+
+  <rect class="box box-blue" x="1660" y="1364" width="558" height="128"/>
+  <text class="box-title" x="1686" y="1398">loss 与更新</text>
+  <text class="formula" x="1686" y="1426">critic: MSE(Q(s,a), r + gamma * Q_tgt(s',a'))</text>
+  <text class="formula" x="1686" y="1450">actor: mean(alpha * log pi(a|s) - Q(s,a))</text>
+  <text class="formula" x="1686" y="1474">alpha: -alpha * (E[log pi] + target_entropy)</text>
+
+  <rect class="box box-blue" x="2252" y="1110" width="268" height="382"/>
+  <text class="box-title" x="2278" y="1144">权重同步与存档</text>
+  <text class="body" x="2278" y="1172">actor 更新后：</text>
+  <text class="small" x="2306" y="1198">sync_model_to_rollout()</text>
+  <text class="body" x="2278" y="1226">rollout worker 拿到新权重</text>
+  <text class="body" x="2278" y="1250">继续下一轮真机 rollout</text>
+  <text class="body" x="2278" y="1278">runner.save_interval 目前默认 -1</text>
+  <text class="small" x="2306" y="1304">即不频繁 checkpoint</text>
+  <text class="small" x="2306" y="1328">避免真机大图像训练 I/O 过重</text>
+  <text class="body" x="2278" y="1356">如需保守上线，可手动改成：</text>
+  <text class="small" x="2306" y="1382">20 或 50 step 存一次</text>
+  <text class="body" x="2278" y="1410">ckpt 中同时包含：</text>
+  <text class="small" x="2306" y="1436">actor / critic / alpha / target_model</text>
+  <text class="small" x="2306" y="1460">以及可选 replay buffer 落盘</text>
+
+  <path class="arrow" d="M 458 1208 C 472 1208, 480 1208, 494 1208"/>
+  <path class="arrow" d="M 458 1248 C 640 1248, 640 1248, 870 1248"/>
+  <path class="arrow" d="M 834 1208 C 848 1208, 856 1208, 870 1208"/>
+  <path class="arrow" d="M 1212 1208 C 1226 1208, 1234 1208, 1248 1208"/>
+  <path class="arrow" d="M 1624 1208 C 1638 1208, 1646 1208, 1660 1208"/>
+  <path class="arrow" d="M 2218 1274 C 2232 1274, 2238 1274, 2252 1274"/>
+  <path class="arrow" d="M 2386 1110 C 2386 1000, 1942 1000, 1942 774"/>
+  <text class="small" x="2190" y="964">新权重同步回 rollout，形成在线闭环</text>
+
+  <path class="arrow" d="M 864 880 C 864 952, 264 952, 264 1110"/>
+  <text class="small" x="280" y="938">env worker 把 chunk rollout 打包成 Trajectory 送给 actor worker</text>
+
+  <rect class="section" x="40" y="1548" width="2520" height="292" fill="url(#sectionD)"/>
+  <text class="section-title" x="68" y="1592">4. 启动顺序与单轮训练循环</text>
+
+  <rect class="box box-gold" x="66" y="1616" width="1184" height="192"/>
+  <text class="box-title" x="92" y="1650">启动顺序（推荐严格按此顺序）</text>
+  <line class="divider" x1="116" y1="1710" x2="1200" y2="1710"/>
+
+  <circle cx="142" cy="1688" r="22" fill="#2f6c5d"/><text class="step-num" x="135" y="1695">1</text>
+  <rect class="step" x="176" y="1658" width="180" height="66"/>
+  <text class="step-title" x="194" y="1684">启动 Ray head</text>
+  <text class="step-body" x="194" y="1707">`ray stop --force` 后 `ray start --head`</text>
+
+  <circle cx="404" cy="1688" r="22" fill="#2f6c5d"/><text class="step-num" x="397" y="1695">2</text>
+  <rect class="step" x="438" y="1658" width="180" height="66"/>
+  <text class="step-title" x="456" y="1684">启动 A2D docker</text>
+  <text class="step-body" x="456" y="1707">确保 ROS2 / 相机 / 控制已就绪</text>
+
+  <circle cx="666" cy="1688" r="22" fill="#2f6c5d"/><text class="step-num" x="659" y="1695">3</text>
+  <rect class="step" x="700" y="1658" width="188" height="66"/>
+  <text class="step-title" x="718" y="1684">启动 gRPC server</text>
+  <text class="step-body" x="718" y="1707">`python3 -m model_inference.run_inference_server`</text>
+
+  <circle cx="944" cy="1688" r="22" fill="#2f6c5d"/><text class="step-num" x="937" y="1695">4</text>
+  <rect class="step" x="978" y="1658" width="220" height="66"/>
+  <text class="step-title" x="996" y="1684">检查观测 ready</text>
+  <text class="step-body" x="996" y="1707">图像、状态、control_mode 都能正常发出</text>
+
+  <circle cx="142" cy="1766" r="22" fill="#2f6c5d"/><text class="step-num" x="135" y="1773">5</text>
+  <rect class="step" x="176" y="1736" width="1022" height="66"/>
+  <text class="step-title" x="194" y="1762">启动 RLinf 真机训练</text>
+  <text class="step-body" x="194" y="1785">`python examples/embodiment/train_embodied_agent.py --config-path examples/embodiment/config --config-name realworld_a2d_sac_psi`</text>
+
+  <rect class="box box-gold" x="1290" y="1616" width="1240" height="192"/>
+  <text class="box-title" x="1316" y="1650">单轮训练循环（每个 runner step 基本就是一轮真机 rollout + 一轮训练）</text>
+  <line class="divider" x1="1336" y1="1710" x2="2484" y2="1710"/>
+
+  <circle cx="1364" cy="1688" r="22" fill="#8d5c2b"/><text class="step-num" x="1357" y="1695">1</text>
+  <rect class="step" x="1398" y="1658" width="136" height="66"/>
+  <text class="step-title" x="1416" y="1684">reset</text>
+  <text class="step-body" x="1416" y="1707">拿到第一帧 obs</text>
+
+  <circle cx="1576" cy="1688" r="22" fill="#8d5c2b"/><text class="step-num" x="1569" y="1695">2</text>
+  <rect class="step" x="1610" y="1658" width="162" height="66"/>
+  <text class="step-title" x="1628" y="1684">模型 rollout</text>
+  <text class="step-body" x="1628" y="1707">control_mode=0</text>
+
+  <circle cx="1814" cy="1688" r="22" fill="#8d5c2b"/><text class="step-num" x="1807" y="1695">3</text>
+  <rect class="step" x="1848" y="1658" width="198" height="66"/>
+  <text class="step-title" x="1866" y="1684">必要时人工接管</text>
+  <text class="step-body" x="1866" y="1707">control_mode=1，写入 intervene_action</text>
+
+  <circle cx="2094" cy="1688" r="22" fill="#8d5c2b"/><text class="step-num" x="2087" y="1695">4</text>
+  <rect class="step" x="2128" y="1658" width="164" height="66"/>
+  <text class="step-title" x="2146" y="1684">切换 / 准备帧</text>
+  <text class="step-body" x="2146" y="1707">control_mode=99，过滤</text>
+
+  <circle cx="2362" cy="1688" r="22" fill="#8d5c2b"/><text class="step-num" x="2355" y="1695">5</text>
+  <rect class="step" x="2396" y="1658" width="108" height="66"/>
+  <text class="step-title" x="2412" y="1684">打 reward</text>
+  <text class="step-body" x="2412" y="1707">键盘 a / b / c</text>
+
+  <circle cx="1364" cy="1766" r="22" fill="#8d5c2b"/><text class="step-num" x="1357" y="1773">6</text>
+  <rect class="step" x="1398" y="1736" width="182" height="66"/>
+  <text class="step-title" x="1416" y="1762">轨迹入 replay/demo</text>
+  <text class="step-body" x="1416" y="1785">valid 入 replay，接管片段另入 demo</text>
+
+  <circle cx="1654" cy="1766" r="22" fill="#8d5c2b"/><text class="step-num" x="1647" y="1773">7</text>
+  <rect class="step" x="1688" y="1736" width="252" height="66"/>
+  <text class="step-title" x="1706" y="1762">先训 critic，再延后训 actor</text>
+  <text class="step-body" x="1706" y="1785">到 20 条轨迹后 actor 才开始更新</text>
+
+  <circle cx="2012" cy="1766" r="22" fill="#8d5c2b"/><text class="step-num" x="2005" y="1773">8</text>
+  <rect class="step" x="2046" y="1736" width="458" height="66"/>
+  <text class="step-title" x="2064" y="1762">同步新权重回 rollout，进入下一轮 episode</text>
+  <text class="step-body" x="2064" y="1785">因此它是一个“真机 rollout -> 数据入池 -> SAC 更新 -> 再 rollout”的在线闭环</text>
+
+  <text class="tiny" x="56" y="1860">文件建议配合缩放查看；SVG 可在 IDE / 浏览器中无损放大。面向当前 RLinf a2d-dev 分支与 A2D HIL 方案生成。</text>
+</svg>

@@ -13,7 +13,7 @@ hydra:
     - file://${oc.env:EMBODIED_PATH}/config/
 
 cluster:
-  num_nodes: 2
+  num_nodes: 1
   component_placement:
     actor:
       node_group: "4090"
@@ -28,7 +28,7 @@ cluster:
     - label: "4090"
       node_ranks: 0
     - label: a2d
-      node_ranks: 1
+      node_ranks: 0
       hardware:
         type: A2D
         configs:
@@ -36,7 +36,7 @@ cluster:
             grpc_port: 12321
             container_name: "a2d-tele-release-2-1-0rc3-latest"
             auto_start_server: false
-            node_rank: 1
+            node_rank: 0
 
 runner:
   task_type: embodied
@@ -59,6 +59,7 @@ algorithm:
   group_size: 1
   agg_q: min
   actor_agg_q: mean
+  backup_entropy: False
 
   rollout_epoch: 1
   eval_rollout_epoch: 1
@@ -73,19 +74,27 @@ algorithm:
   entropy_tuning:
     alpha_type: softplus
     initial_alpha: 0.01
-    target_entropy: -26     # -action_dim
+    target_entropy: auto    # use -num_active_rl_action_dims
     optim:
       lr: 3.0e-4
       lr_scheduler: torch_constant
       clip_grad: 10.0
 
   critic_actor_ratio: 4
+  train_actor_steps: 20
   replay_buffer:
     enable_cache: True
     cache_size: 200
     min_buffer_size: 2
     sample_window_size: 200
     auto_save: False
+  demo_buffer:
+    enable_cache: True
+    cache_size: 200
+    min_buffer_size: 1
+    sample_window_size: 200
+    auto_save: False
+    allow_replay_only_until_ready: True
 
   target_update_freq: 1
 
@@ -107,6 +116,7 @@ env:
 
   train:
     total_num_envs: 1
+    keyboard_reward_wrapper: single_stage
     ignore_terminations: False
     override_cfg:
       is_dummy: False
@@ -118,7 +128,12 @@ env:
       step_frequency: 10.0
       max_num_steps: 100
       reset_on_env_reset: True
-      normalize_actions: True
+      policy_action_dim: 26
+      normalize_actions: False
+      clip_policy_actions: False
+      model_control_modes: [0]
+      teleop_control_modes: [1]
+      idle_control_modes: [99]
       image_keys: ["rgb_head", "rgb_left_hand", "rgb_right_hand"]
       state_keys:
         [
@@ -153,13 +168,19 @@ env:
 
   eval:
     total_num_envs: 1
+    keyboard_reward_wrapper: single_stage
     override_cfg:
       is_dummy: False
       task_name: "A2D psi-policy SAC evaluation"
       step_frequency: 10.0
       max_num_steps: 100
       reset_on_env_reset: True
-      normalize_actions: True
+      policy_action_dim: 26
+      normalize_actions: False
+      clip_policy_actions: False
+      model_control_modes: [0]
+      teleop_control_modes: [1]
+      idle_control_modes: [99]
       image_keys: ["rgb_head", "rgb_left_hand", "rgb_right_hand"]
       state_keys:
         [
@@ -223,6 +244,12 @@ actor:
     normalizer_path: "/path/to/normalizer.pkl"
     action_dim: 26
     num_q_heads: 2
+    # Examples:
+    # 1) learn all dims: keep rl_action_mask.enabled = False
+    # 2) only learn both arms:
+    #    rl_action_mask: {enabled: True, active_groups: ["arms"], active_indices: []}
+    # 3) only learn a few hand joints:
+    #    rl_action_mask: {enabled: True, active_groups: [], active_indices: [14, 15, 20, 21]}
 
   optim:
     clip_grad: 10.0

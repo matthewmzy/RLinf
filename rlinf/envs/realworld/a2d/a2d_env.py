@@ -54,10 +54,16 @@ class A2DRobotConfig:
 
     # RLinf policies usually act in [-1, 1]; map that range into controller action values.
     normalize_actions: bool = True
+    clip_policy_actions: bool = True
     action_low: list[float] = field(
         default_factory=lambda: [-1.0] * 16 + [0.0] * 12
     )
     action_high: list[float] = field(default_factory=lambda: [1.0] * 28)
+    model_control_modes: list[int] = field(default_factory=lambda: [0])
+    teleop_control_modes: list[int] = field(default_factory=lambda: [1])
+    idle_control_modes: list[int] = field(default_factory=lambda: [99])
+    expose_intervention_from_control_mode: bool = True
+    filter_idle_transitions: bool = True
 
     image_keys: list[str] = field(
         default_factory=lambda: ["rgb_head", "rgb_left_hand", "rgb_right_hand"]
@@ -102,9 +108,17 @@ class A2DRobotConfig:
         self.step_frequency = float(self.step_frequency)
         self.max_num_steps = int(self.max_num_steps)
         self.policy_action_dim = int(self.policy_action_dim)
+        self.clip_policy_actions = bool(self.clip_policy_actions)
         self.waist_action = np.asarray(self.waist_action, dtype=np.float32).tolist()
         self.action_low = np.asarray(self.action_low, dtype=np.float32).tolist()
         self.action_high = np.asarray(self.action_high, dtype=np.float32).tolist()
+        self.model_control_modes = [int(value) for value in self.model_control_modes]
+        self.teleop_control_modes = [int(value) for value in self.teleop_control_modes]
+        self.idle_control_modes = [int(value) for value in self.idle_control_modes]
+        self.expose_intervention_from_control_mode = bool(
+            self.expose_intervention_from_control_mode
+        )
+        self.filter_idle_transitions = bool(self.filter_idle_transitions)
         if len(self.action_low) != len(self.action_high):
             raise ValueError("action_low and action_high must have the same length.")
         if len(self.action_low) != 28:
@@ -250,6 +264,63 @@ class A2DEnv(gym.Env):
             (((controller_action + 1.0) * 0.5) * (high - low) + low).astype(np.float32)
         )
 
+    def _map_controller_action_to_policy(self, controller_action: np.ndarray) -> np.ndarray:
+        controller_action = np.asarray(controller_action, dtype=np.float32).reshape(-1)
+        if controller_action.size != 28:
+            raise ValueError(
+                f"Expected 28 controller action dims, got {controller_action.size}."
+            )
+
+        policy_action = (
+            controller_action[2:]
+            if self.config.policy_action_dim == 26
+            else controller_action.copy()
+        )
+        if not self.config.normalize_actions:
+            return policy_action.astype(np.float32)
+
+        low = np.asarray(self.config.action_low, dtype=np.float32)
+        high = np.asarray(self.config.action_high, dtype=np.float32)
+        normalized = 2.0 * (controller_action - low) / np.maximum(high - low, 1e-6) - 1.0
+        if self.config.policy_action_dim == 26:
+            normalized = normalized[2:]
+        return normalized.astype(np.float32)
+
+    def _get_controller_state_action(self, robot_state: A2DRobotState) -> np.ndarray:
+        return np.concatenate(
+            [
+                np.asarray(
+                    robot_state.states["waist_joints_states"], dtype=np.float32
+                ).reshape(-1),
+                np.asarray(
+                    robot_state.states["arm_joint_states"], dtype=np.float32
+                ).reshape(-1),
+                np.asarray(
+                    robot_state.states["left_hand_states"], dtype=np.float32
+                ).reshape(-1),
+                np.asarray(
+                    robot_state.states["right_hand_states"], dtype=np.float32
+                ).reshape(-1),
+            ],
+            axis=0,
+        )
+
+    def _get_policy_space_action(self, robot_state: A2DRobotState) -> np.ndarray:
+        return self._map_controller_action_to_policy(
+            self._get_controller_state_action(robot_state)
+        )
+
+    def _get_control_mode_name(self, control_mode: Optional[int]) -> str:
+        if control_mode in self.config.model_control_modes:
+            return "model"
+        if control_mode in self.config.teleop_control_modes:
+            return "teleop"
+        if control_mode in self.config.idle_control_modes:
+            return "idle"
+        if control_mode is None:
+            return "unknown"
+        return f"mode_{control_mode}"
+
     def _extract_observation(self, robot_state: A2DRobotState) -> dict:
         frames = {}
         for key in self.config.image_keys:
@@ -272,12 +343,25 @@ class A2DEnv(gym.Env):
         return {"state": state, "frames": frames}
 
     def _build_info(self, robot_state: A2DRobotState) -> dict:
+        control_mode = robot_state.control_mode
+        control_mode_name = self._get_control_mode_name(control_mode)
+        is_idle = (
+            self.config.filter_idle_transitions
+            and control_mode in self.config.idle_control_modes
+        )
         info = {
             "timestamps": robot_state.timestamps.copy(),
-            "control_mode": robot_state.control_mode,
+            "control_mode": control_mode,
+            "control_mode_name": control_mode_name,
             "trajectory_label": robot_state.trajectory_label,
             "is_switch_mode": robot_state.is_switch_mode,
+            "data_valid": not is_idle,
         }
+        if (
+            self.config.expose_intervention_from_control_mode
+            and control_mode in self.config.teleop_control_modes
+        ):
+            info["intervene_action"] = self._get_policy_space_action(robot_state)
         return info
 
     def _calc_reward(self, robot_state: A2DRobotState) -> float:
@@ -312,7 +396,8 @@ class A2DEnv(gym.Env):
     def step(self, action: np.ndarray):
         start_time = time.time()
         action = np.asarray(action, dtype=np.float32).reshape(-1)
-        action = np.clip(action, self.action_space.low, self.action_space.high)
+        if self.config.clip_policy_actions:
+            action = np.clip(action, self.action_space.low, self.action_space.high)
 
         if not self.config.is_dummy:
             controller_action = self._map_policy_action_to_controller(action)

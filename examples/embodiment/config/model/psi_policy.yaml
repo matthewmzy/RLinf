@@ -21,6 +21,16 @@ q_hidden_dims: [256, 256, 256]
 noise_std_train: 0.3
 noise_std_rollout: 0.02
 
+# RL action mask:
+# - enabled=False: all 26 action dims participate in SAC exploration and learning
+# - active_groups can use: all, arms, hands, left_arm, right_arm, left_hand, right_hand
+# - active_indices are 0-based indices in action order:
+#   left_arm[0:7], right_arm[7:14], left_hand[14:20], right_hand[20:26]
+rl_action_mask:
+  enabled: False
+  active_groups: ["all"]
+  active_indices: []
+
 # Action chunking (execute 4 of 16 predicted steps)
 num_action_chunks: 4
 
@@ -30,8 +40,8 @@ image_size: 224
 # State split: how to carve A2D states[28] into psi-policy keys
 # A2D state layout: arm_joints[14] + left_hand[6] + right_hand[6] + waist[2]
 state_split:
-  right_arm: [0, 7]
-  left_arm: [7, 14]
+  right_arm: [7, 14]
+  left_arm: [0, 7]
   left_hand: [14, 20]
   right_hand: [20, 26]
 

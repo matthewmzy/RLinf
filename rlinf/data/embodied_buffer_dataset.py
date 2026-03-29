@@ -53,6 +53,7 @@ class ReplayBufferDataset(IterableDataset):
         batch_size: int,
         min_replay_buffer_size: int,
         min_demo_buffer_size: int,
+        allow_replay_only_until_demo_ready: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initializes the ReplayBufferDataset.
@@ -67,14 +68,37 @@ class ReplayBufferDataset(IterableDataset):
                 buffer before sampling begins.
             min_demo_buffer_size: Minimum number of samples required in demo
                 buffer before sampling begins (ignored if demo_buffer is None).
+            allow_replay_only_until_demo_ready: When True and a demo buffer is
+                configured, start training from replay-only batches until the
+                demo buffer reaches its minimum size, then switch to mixed
+                replay+demo batches.
             **kwargs: Additional keyword arguments (unused, for compatibility).
         """
         self.replay_buffer = replay_buffer
         self.demo_buffer = demo_buffer
         self.min_replay_buffer_size = min_replay_buffer_size
         self.min_demo_buffer_size = min_demo_buffer_size
+        self.allow_replay_only_until_demo_ready = bool(
+            allow_replay_only_until_demo_ready
+        )
 
         self.batch_size = batch_size
+
+    def _get_sampling_mode(self) -> tuple[bool, bool]:
+        """Returns whether sampling can start and whether demo data should mix in."""
+        if not self.replay_buffer.is_ready(self.min_replay_buffer_size):
+            return False, False
+
+        if self.demo_buffer is None:
+            return True, False
+
+        if self.demo_buffer.is_ready(self.min_demo_buffer_size):
+            return True, True
+
+        if self.allow_replay_only_until_demo_ready:
+            return True, False
+
+        return False, False
 
     def __iter__(self) -> Iterator[dict[str, torch.Tensor]]:
         """Returns an infinite iterator that yields batches.
@@ -88,16 +112,9 @@ class ReplayBufferDataset(IterableDataset):
             depend on the buffer's trajectory format.
         """
         while True:
-            is_ready = True
-            if not self.replay_buffer.is_ready(self.min_replay_buffer_size):
-                is_ready = False
-            if self.demo_buffer is not None and not self.demo_buffer.is_ready(
-                self.min_demo_buffer_size
-            ):
-                is_ready = False
-
+            is_ready, use_demo_buffer = self._get_sampling_mode()
             if is_ready:
-                if self.demo_buffer is not None:
+                if use_demo_buffer:
                     replay_batch = self.replay_buffer.sample(self.batch_size // 2)
                     demo_batch = self.demo_buffer.sample(self.batch_size // 2)
                     batch = concat_batch(replay_batch, demo_batch)
@@ -143,6 +160,7 @@ class PreloadReplayBufferDataset(ReplayBufferDataset):
         min_replay_buffer_size: int,
         min_demo_buffer_size: int,
         prefetch_size: int = 5,
+        allow_replay_only_until_demo_ready: bool = False,
     ) -> None:
         """Initializes the PreloadReplayBufferDataset.
 
@@ -158,6 +176,9 @@ class PreloadReplayBufferDataset(ReplayBufferDataset):
                 buffer before sampling begins (ignored if demo_buffer is None).
             prefetch_size: Maximum number of batches to prefetch and store in
                 the queue. Defaults to 10.
+            allow_replay_only_until_demo_ready: When True and a demo buffer is
+                configured, start sampling from replay-only batches until the
+                demo buffer reaches its minimum size.
         """
         self._stop_event = threading.Event()
 
@@ -165,6 +186,9 @@ class PreloadReplayBufferDataset(ReplayBufferDataset):
         self.demo_buffer = demo_buffer
         self.min_replay_buffer_size = min_replay_buffer_size
         self.min_demo_buffer_size = min_demo_buffer_size
+        self.allow_replay_only_until_demo_ready = bool(
+            allow_replay_only_until_demo_ready
+        )
 
         self.batch_size = batch_size
         self.prefetch_size = prefetch_size
@@ -187,16 +211,9 @@ class PreloadReplayBufferDataset(ReplayBufferDataset):
                 time.sleep(0.1)
                 continue
 
-            is_ready = True
-            if not self.replay_buffer.is_ready(self.min_replay_buffer_size):
-                is_ready = False
-            if self.demo_buffer is not None and not self.demo_buffer.is_ready(
-                self.min_demo_buffer_size
-            ):
-                is_ready = False
-
+            is_ready, use_demo_buffer = self._get_sampling_mode()
             if is_ready:
-                if self.demo_buffer is not None:
+                if use_demo_buffer:
                     replay_batch = self.replay_buffer.sample(self.batch_size // 2)
                     demo_batch = self.demo_buffer.sample(self.batch_size // 2)
                     batch = concat_batch(replay_batch, demo_batch)
@@ -257,7 +274,7 @@ class PreloadReplayBufferDataset(ReplayBufferDataset):
         self._stop_event.set()
 
         thread_timeout = 10
-        if self.sample_thread.is_alive():
+        if self.sample_thread is not None and self.sample_thread.is_alive():
             self.sample_thread.join(timeout=thread_timeout)
             if self.sample_thread.is_alive():
                 logger.warning(
