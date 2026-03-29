@@ -12,15 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .a2d import A2DConfig, A2DHWInfo
-from .franka import FrankaConfig, FrankaHWInfo
-from .xsquare import Turtle2Config, Turtle2HWInfo
+from gymnasium.envs.registration import register
 
-__all__ = [
-    "A2DConfig",
-    "A2DHWInfo",
-    "FrankaConfig",
-    "FrankaHWInfo",
-    "Turtle2Config",
-    "Turtle2HWInfo",
-]
+register(
+    id="A2DEnv-v1",
+    entry_point="rlinf.envs.realworld.a2d:A2DEnv",
+)

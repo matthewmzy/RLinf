@@ -18,7 +18,7 @@ NO_ROOT=0
 NO_INSTALL_RLINF_CMD="--no-install-project"
 SUPPORTED_TARGETS=("embodied" "agentic" "docs")
 SUPPORTED_MODELS=("openvla" "openvla-oft" "openpi" "gr00t" "dexbotic" "lingbotvla")
-SUPPORTED_ENVS=("behavior" "maniskill_libero" "metaworld" "calvin" "isaaclab" "robocasa" "franka" "frankasim" "robotwin" "habitat" "opensora" "wan" "xsquare_turtle2" "liberopro" "liberoplus")
+SUPPORTED_ENVS=("behavior" "maniskill_libero" "metaworld" "calvin" "isaaclab" "robocasa" "franka" "frankasim" "robotwin" "habitat" "opensora" "wan" "xsquare_turtle2" "liberopro" "liberoplus" "a2d")
 
 #=======================Utility Functions=======================
 
@@ -599,6 +599,10 @@ install_env_only() {
     create_and_sync_venv
     SKIP_ROS=${SKIP_ROS:-0}
     case "$ENV_NAME" in
+        a2d)
+            install_common_embodied_deps
+            uv sync --extra a2d --active $NO_INSTALL_RLINF_CMD
+            ;;
         franka)
             uv sync --extra franka --active $NO_INSTALL_RLINF_CMD
             if [ "$SKIP_ROS" -ne 1 ]; then

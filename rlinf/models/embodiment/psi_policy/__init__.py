@@ -12,15 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .a2d import A2DConfig, A2DHWInfo
-from .franka import FrankaConfig, FrankaHWInfo
-from .xsquare import Turtle2Config, Turtle2HWInfo
+import torch
+from omegaconf import DictConfig, OmegaConf
 
-__all__ = [
-    "A2DConfig",
-    "A2DHWInfo",
-    "FrankaConfig",
-    "FrankaHWInfo",
-    "Turtle2Config",
-    "Turtle2HWInfo",
-]
+
+def get_model(cfg: DictConfig, torch_dtype=torch.bfloat16):
+    from rlinf.models.embodiment.psi_policy.psi_policy_for_rl import (
+        PsiPolicyConfig,
+        PsiPolicyForRL,
+    )
+
+    model_config = PsiPolicyConfig()
+    model_config.update_from_dict(OmegaConf.to_container(cfg, resolve=True))
+    model = PsiPolicyForRL(model_config)
+
+    return model

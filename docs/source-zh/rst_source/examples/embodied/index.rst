@@ -318,6 +318,7 @@
    sac_flow
    mlp
    dexbotic
+   a2d
    franka
    xsquare_turtle2
    sft_openpi

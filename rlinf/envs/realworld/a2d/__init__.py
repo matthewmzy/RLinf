@@ -12,15 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .a2d import A2DConfig, A2DHWInfo
-from .franka import FrankaConfig, FrankaHWInfo
-from .xsquare import Turtle2Config, Turtle2HWInfo
+from .a2d_env import A2DEnv, A2DRobotConfig
+from .a2d_robot_state import A2DRobotState
 
-__all__ = [
-    "A2DConfig",
-    "A2DHWInfo",
-    "FrankaConfig",
-    "FrankaHWInfo",
-    "Turtle2Config",
-    "Turtle2HWInfo",
-]
+__all__ = ["A2DEnv", "A2DRobotConfig", "A2DRobotState"]

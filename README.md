@@ -30,6 +30,7 @@ RLinf is a flexible and scalable open-source RL infrastructure designed for Embo
 
 
 ## What's NEW!
+- [2026/03] 🔥 RLinf supports real-world RL with A2D via the official `a2d-tele` controller docker. Doc: [RL on A2D in the RealWorld](https://rlinf.readthedocs.io/en/latest/rst_source/examples/embodied/a2d.html).
 - [2026/03] 🔥 RLinf supports reinforcement learning fine-tuning for LIBERO-Pro & LIBERO-Plus. Doc: [LIBERO-Pro & LIBERO-Plus](https://rlinf.readthedocs.io/zh-cn/latest/rst_source/examples/embodied/liberoplus_pro.html).
 - [2026/03] 🔥 RLinf supports DAgger for embodied policies. Doc: [DAgger for Embodied Policies](https://rlinf.readthedocs.io/en/latest/rst_source/examples/embodied/dagger.html).
 - [2026/03] 🔥 RLinf now supports evaluating and fine-tuning LingBot-VLA within the RoboTwin environment! Doc: [LingBot-VLA](https://rlinf.readthedocs.io/en/latest/rst_source/examples/embodied/lingbotvla.html).
@@ -115,6 +116,7 @@ Multiple Backend Integrations
       </td>
       <td>
         <ul style="margin-left: 0; padding-left: 16px;">
+          <li><a href="https://rlinf.readthedocs.io/en/latest/rst_source/examples/embodied/a2d.html">A2D</a> ✅</li>
           <li><a href="https://rlinf.readthedocs.io/zh-cn/latest/rst_source/examples/embodied/franka.html">Franka Arm</a> ✅</li>
           <li><a href="https://rlinf.readthedocs.io/en/latest/rst_source/examples/embodied/xsquare_turtle2.html">XSquare Turtle2</a> ✅</li>
           <li>More...</li>

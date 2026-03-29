@@ -1,0 +1,43 @@
+model_type: "psi_policy"
+
+model_path: ""              # psi-policy checkpoint (.ckpt) path
+normalizer_path: ""         # normalizer.pkl path
+
+# Architecture (must match pretrained checkpoint)
+action_dim: 26              # arm_joints[14] + left_hand[6] + right_hand[6]
+action_horizon: 16
+n_layer: 6
+n_head: 4
+p_drop_attn: 0.1
+use_attn_mask: False
+encoder_name: "vit_small_r26_s32_224"
+
+# RL heads
+add_q_head: True
+num_q_heads: 2
+q_hidden_dims: [256, 256, 256]
+
+# Exploration noise (same principle as FlowPolicy SAC)
+noise_std_train: 0.3
+noise_std_rollout: 0.02
+
+# Action chunking (execute 4 of 16 predicted steps)
+num_action_chunks: 4
+
+# Image preprocessing
+image_size: 224
+
+# State split: how to carve A2D states[28] into psi-policy keys
+# A2D state layout: arm_joints[14] + left_hand[6] + right_hand[6] + waist[2]
+state_split:
+  right_arm: [0, 7]
+  left_arm: [7, 14]
+  left_hand: [14, 20]
+  right_hand: [20, 26]
+
+precision: "bfloat16"
+
+is_lora: False
+lora_rank: 32
+
+sharding_strategy: no_shard

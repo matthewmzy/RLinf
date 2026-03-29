@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .a2d import A2DEnv, A2DRobotConfig, A2DRobotState
+from .a2d import tasks as a2d_tasks
 from .franka import FrankaEnv, FrankaRobotConfig, FrankaRobotState
 from .franka import tasks as franka_tasks
 from .realworld_env import RealWorldEnv
@@ -25,6 +27,10 @@ __all__ = [
     "FrankaRobotConfig",
     "FrankaRobotState",
     "franka_tasks",
+    "A2DEnv",
+    "A2DRobotConfig",
+    "A2DRobotState",
+    "a2d_tasks",
     "Turtle2Env",
     "Turtle2RobotConfig",
     "Turtle2RobotState",

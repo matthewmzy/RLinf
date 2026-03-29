@@ -110,6 +110,10 @@ embodied = [
     "gymnasium",
     "gym",
 ]
+a2d = [
+    "grpcio>=1.62.0",
+    "protobuf>=6.31.1",
+]
 franka = [
     "pyyaml",
     "rospkg",
@@ -146,6 +150,7 @@ conflicts = [
       { extra = "agentic-sglang" },
       { extra = "agentic-vllm" },
       { extra = "embodied" },
+      { extra = "a2d" },
       { extra = "franka" },
       { extra = "xsquare_turtle2" }
     ],

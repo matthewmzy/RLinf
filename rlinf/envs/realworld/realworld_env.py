@@ -93,8 +93,10 @@ class RealWorldEnv(gym.Env):
             elif self.cfg.keyboard_reward_wrapper == "single_stage":
                 env = KeyboardRewardDoneWrapper(env)
 
-        env = RelativeFrame(env)
-        env = Quat2EulerWrapper(env)
+        if self.cfg.get("use_relative_frame", True):
+            env = RelativeFrame(env)
+        if self.cfg.get("quat_to_euler", True):
+            env = Quat2EulerWrapper(env)
         return env
 
     @staticmethod
@@ -212,7 +214,7 @@ class RealWorldEnv(gym.Env):
 
         # Process states
         full_states = []
-        raw_states = OrderedDict(sorted(raw_obs["state"].items()))
+        raw_states = OrderedDict(raw_obs["state"].items())
         for value in raw_states.values():
             full_states.append(value)
         full_states = np.concatenate(full_states, axis=-1)
@@ -227,7 +229,7 @@ class RealWorldEnv(gym.Env):
                 f"Please set 'main_image_key' in your env config to one of the available keys."
             )
         obs["main_images"] = raw_obs["frames"][self.main_image_key]
-        raw_images = OrderedDict(sorted(raw_obs["frames"].items()))
+        raw_images = OrderedDict(raw_obs["frames"].items())
         raw_images.pop(self.main_image_key)
 
         if raw_images:

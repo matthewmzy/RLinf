@@ -318,6 +318,7 @@ as well as reinforcement learning training examples on real robots.
    sac_flow
    mlp
    dexbotic
+   a2d
    franka
    xsquare_turtle2
    sft_openpi
