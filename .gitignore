@@ -21,3 +21,6 @@ rlinf/envs/maniskill/assets
 PKG-INFO
 
 aaa_*
+
+RLinf-ResNet10-pretrained
+rlinf-train.tar
