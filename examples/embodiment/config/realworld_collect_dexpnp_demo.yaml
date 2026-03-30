@@ -27,11 +27,11 @@ cluster:
       hardware:
         type: Franka
         configs:
-          - robot_ip: ROBOT_IP # Replace with your robot's IP address
+          - robot_ip: 172.17.0.2 # Replace with your robot's IP address
             node_rank: 1
 
 reward_server:
-  checkpoint_path: "/path/to/reward_classifier.pt"
+  checkpoint_path: "logs/20260327-09:55:13-reward-classifier-dex_pnp/reward_classifier.pt"
   image_keys: null
   device: cuda
   server_name: "ClassifierRewardServer"
@@ -43,7 +43,7 @@ runner:
     project_name: rlinf
     experiment_name: "collect-dexpnp-demo"
     logger_backends: ["tensorboard"]
-  num_data_episodes: 20       # target number of successful demos
+  num_data_episodes: 150       # target number of successful demos
   record_task_description: False
 
 env:
@@ -57,10 +57,12 @@ env:
       left_port: "/dev/ttyACM0"
       frequency: 30
     classifier_reward_wrapper:
+      remote: true
+      server_name: "ClassifierRewardServer"
       threshold: 0.75
     override_cfg:
       camera_configs: ${cameras.realsense}
-      target_ee_pose: TARGET_EE_POSE # Replace with your target end-effector pose
+      target_ee_pose: [0.8132,0.0635, 0.2302, 1.624,  1.3143, 0.8682] # Replace with your target end-effector pose
       end_effector_type: "ruiyan_hand"
       end_effector_config:
         port: "/dev/ttyUSB0"

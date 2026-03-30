@@ -199,7 +199,11 @@ def make_remote_classifier_reward_func(
     """
     import ray
 
-    server = ray.get_actor(server_name)
+    from rlinf.scheduler.cluster import Cluster
+    from rlinf.scheduler.manager.worker_manager import WorkerAddress
+
+    worker_name = WorkerAddress.from_parent_name_rank(server_name, 0).get_name()
+    server = ray.get_actor(worker_name, namespace=Cluster.NAMESPACE)
 
     def _remote_reward_func(obs: dict) -> float:
         # Serialize as raw bytes to avoid numpy pickle version mismatch

@@ -213,6 +213,14 @@ class DataCollector(Worker):
                     success_cnt += 1
                 self.total_cnt += 1
 
+                # Determine end reason
+                if is_success:
+                    end_reason = "task completed (classifier success)" if use_classifier else "task completed (reward > 0)"
+                elif bool(truncated):
+                    end_reason = f"timeout (reached max {max_steps} steps)"
+                else:
+                    end_reason = "terminated (classifier below threshold)" if use_classifier else "terminated"
+
                 # Build descriptive status string
                 if is_success:
                     status = "✅ SUCCESS"
@@ -226,10 +234,14 @@ class DataCollector(Worker):
                     clf_info_str = f"  classifier_reward={clf_reward_val:.3f}"
 
                 self.log_info(
-                    f"Episode {episode_cnt} ended [{step_in_ep}/{max_steps} steps]  "
-                    f"{status}{clf_info_str}\n"
-                    f"    success: {success_cnt}/{self.num_data_episodes}  "
-                    f"total episodes: {self.total_cnt}"
+                    f"\n{'=' * 60}\n"
+                    f"  Episode {episode_cnt} ENDED\n"
+                    f"  Steps: {step_in_ep}/{max_steps}\n"
+                    f"  Result: {status}{clf_info_str}\n"
+                    f"  End reason: {end_reason}\n"
+                    f"  Progress: {success_cnt}/{self.num_data_episodes} successful demos  "
+                    f"(total episodes: {self.total_cnt})\n"
+                    f"{'=' * 60}"
                 )
 
                 # Save Trajectory to the 'demos' directory
@@ -241,6 +253,9 @@ class DataCollector(Worker):
 
                 # Reset for next episode
                 if success_cnt < self.num_data_episodes:
+                    self.log_info(
+                        f"  Resetting environment for next episode..."
+                    )
                     obs, _ = self.env.reset()
                     current_obs_processed = self._process_obs(obs)
                     current_rollout = EmbodiedRolloutResult(
@@ -250,11 +265,11 @@ class DataCollector(Worker):
                     step_in_ep = 0
                     episode_cnt += 1
                     self.log_info(
-                        f"\n{'#' * 50}\n"
-                        f"  Episode {episode_cnt}  "
-                        f"success: {success_cnt}/{self.num_data_episodes}\n"
+                        f"\n{'#' * 60}\n"
+                        f"  Episode {episode_cnt} ready to start\n"
+                        f"  Remaining: {self.num_data_episodes - success_cnt} successful demos needed\n"
                         f"  >>> Start teleoperation <<<\n"
-                        f"{'#' * 50}"
+                        f"{'#' * 60}"
                     )
 
         self.buffer.close()

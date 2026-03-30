@@ -151,7 +151,7 @@ def launch_classifier_reward_server(
     )
 
     # Wait for initialization
-    worker_group.init_workers().wait()
+    worker_group.init_worker().wait()
 
     # Verify the server is ready
     ready_results = worker_group.ready().wait()
