@@ -50,7 +50,7 @@ class A2DRobotConfig:
     reset_on_env_reset: bool = True
     task_name: str = "A2D teleoperation"
     policy_action_dim: int = 28
-    waist_action: list[float] = field(default_factory=lambda: [0.0, 0.0])
+    waist_action: Optional[list[float]] = None
 
     # RLinf policies usually act in [-1, 1]; map that range into controller action values.
     normalize_actions: bool = True
@@ -109,7 +109,10 @@ class A2DRobotConfig:
         self.max_num_steps = int(self.max_num_steps)
         self.policy_action_dim = int(self.policy_action_dim)
         self.clip_policy_actions = bool(self.clip_policy_actions)
-        self.waist_action = np.asarray(self.waist_action, dtype=np.float32).tolist()
+        if self.waist_action is not None:
+            self.waist_action = np.asarray(
+                self.waist_action, dtype=np.float32
+            ).tolist()
         self.action_low = np.asarray(self.action_low, dtype=np.float32).tolist()
         self.action_high = np.asarray(self.action_high, dtype=np.float32).tolist()
         self.model_control_modes = [int(value) for value in self.model_control_modes]
@@ -129,7 +132,9 @@ class A2DRobotConfig:
             raise ValueError(
                 f"A2D only supports policy_action_dim 26 or 28, got {self.policy_action_dim}."
             )
-        if self.policy_action_dim == 26 and len(self.waist_action) != 2:
+        if self.policy_action_dim == 26 and self.waist_action is not None and len(
+            self.waist_action
+        ) != 2:
             raise ValueError(
                 "waist_action must contain exactly 2 values when policy_action_dim is 26."
             )
@@ -159,11 +164,11 @@ class A2DEnv(gym.Env):
         self._num_steps = 0
         self._robot_state = A2DRobotState()
 
-        self._init_action_obs_spaces()
-
         if not self.config.is_dummy:
             self._setup_hardware()
             self._robot_state = self._controller.reset().wait()[0]
+
+        self._init_action_obs_spaces()
 
     def _setup_hardware(self) -> None:
         from .a2d_controller import A2DController
@@ -212,6 +217,21 @@ class A2DEnv(gym.Env):
                 action_high = controller_high
         self.action_space = gym.spaces.Box(action_low, action_high, dtype=np.float32)
 
+        image_shapes = copy.deepcopy(self.config.image_shapes)
+        state_shapes = copy.deepcopy(self.config.state_shapes)
+        if self._robot_state.images:
+            image_shapes = {
+                key: list(np.asarray(self._robot_state.images[key]).shape)
+                for key in self.config.image_keys
+                if key in self._robot_state.images
+            }
+        if self._robot_state.states:
+            state_shapes = {
+                key: list(np.asarray(self._robot_state.states[key]).shape)
+                for key in self.config.state_keys
+                if key in self._robot_state.states
+            }
+
         frames_space = {
             key: gym.spaces.Box(
                 low=0,
@@ -219,8 +239,7 @@ class A2DEnv(gym.Env):
                 shape=tuple(shape),
                 dtype=np.uint8,
             )
-            for key, shape in self.config.image_shapes.items()
-            if key in self.config.image_keys
+            for key, shape in image_shapes.items()
         }
         states_space = {
             key: gym.spaces.Box(
@@ -229,8 +248,7 @@ class A2DEnv(gym.Env):
                 shape=tuple(shape),
                 dtype=np.float32,
             )
-            for key, shape in self.config.state_shapes.items()
-            if key in self.config.state_keys
+            for key, shape in state_shapes.items()
         }
         self.observation_space = gym.spaces.Dict(
             {
@@ -238,6 +256,8 @@ class A2DEnv(gym.Env):
                 "frames": gym.spaces.Dict(frames_space),
             }
         )
+        self.config.image_shapes = image_shapes
+        self.config.state_shapes = state_shapes
         self._base_observation_space = copy.deepcopy(self.observation_space)
 
     def _expand_policy_action(self, action: np.ndarray) -> np.ndarray:
@@ -248,10 +268,20 @@ class A2DEnv(gym.Env):
             )
         if self.config.policy_action_dim == 28:
             return action
-        # The A2D controller uses waist + arm + hands, while psi-policy rgb_state
-        # predicts only arm + hands. Fill waist from config and prepend it.
-        waist_action = np.asarray(self.config.waist_action, dtype=np.float32)
+        # When the policy only controls arm+hands, freeze the waist at the current
+        # robot reading unless a fixed waist_action is explicitly configured.
+        waist_action = self._get_waist_action()
         return np.concatenate([waist_action, action], axis=0)
+
+    def _get_waist_action(self) -> np.ndarray:
+        if self.config.waist_action is not None:
+            return np.asarray(self.config.waist_action, dtype=np.float32).reshape(-1)
+        waist_state = self._robot_state.states.get("waist_joints_states")
+        if waist_state is not None:
+            waist_action = np.asarray(waist_state, dtype=np.float32).reshape(-1)
+            if waist_action.size == 2:
+                return waist_action
+        return np.zeros(2, dtype=np.float32)
 
     def _map_policy_action_to_controller(self, action: np.ndarray) -> np.ndarray:
         controller_action = self._expand_policy_action(action)

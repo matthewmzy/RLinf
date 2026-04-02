@@ -84,11 +84,14 @@ class RealWorldEnv(gym.Env):
             hardware_info=hardware_info,
             env_idx=env_idx,
         )
+        base_env = env.unwrapped if hasattr(env, "unwrapped") else env
         if self.cfg.get("no_gripper", True):
             env = GripperCloseEnv(env)
-        if not env.config.is_dummy and self.cfg.get("use_spacemouse", True):
+        if not base_env.config.is_dummy and self.cfg.get("use_spacemouse", True):
             env = SpacemouseIntervention(env)
-        if not env.config.is_dummy and self.cfg.get("keyboard_reward_wrapper", None):
+        if not base_env.config.is_dummy and self.cfg.get(
+            "keyboard_reward_wrapper", None
+        ):
             if self.cfg.keyboard_reward_wrapper == "multi_stage":
                 env = KeyboardRewardDoneMultiStageWrapper(env)
             elif self.cfg.keyboard_reward_wrapper == "single_stage":
@@ -180,11 +183,18 @@ class RealWorldEnv(gym.Env):
     def _record_metrics(self, step_reward, terminations, intervene_current_step, infos):
         episode_info = {}
         self.returns += step_reward
-        self.success_once = self.success_once | terminations
+        success_flags = np.asarray(infos.get("success", terminations), dtype=bool).copy()
+        fail_flags = np.asarray(
+            infos.get("fail", np.zeros(self.num_envs, dtype=bool)),
+            dtype=bool,
+        ).copy()
+        self.success_once = self.success_once | success_flags
+        self.fail_once = self.fail_once | fail_flags
         self.intervened_once = self.intervened_once | intervene_current_step
         self.intervened_steps += intervene_current_step.astype(int)
 
         episode_info["success_once"] = self.success_once.copy()
+        episode_info["fail_once"] = self.fail_once.copy()
         episode_info["return"] = self.returns.copy()
         episode_info["episode_len"] = self.elapsed_steps.copy()
         episode_info["reward"] = episode_info["return"] / episode_info["episode_len"]
@@ -263,7 +273,18 @@ class RealWorldEnv(gym.Env):
         truncations = self.elapsed_steps >= self.cfg.max_episode_steps
 
         obs = self._wrap_obs(raw_obs)
-        step_reward = self._calc_step_reward(_reward)
+        step_reward = self._calc_step_reward(_reward).copy()
+        success_flags = np.asarray(infos.get("success", terminations), dtype=bool).copy()
+        timeout_fail = np.asarray(truncations & ~terminations, dtype=bool).copy()
+        fail_flags = np.asarray(
+            infos.get("fail", np.zeros(self.num_envs, dtype=bool)),
+            dtype=bool,
+        ).copy()
+        fail_flags = fail_flags | timeout_fail
+        step_reward[timeout_fail] = -1.0
+        infos["success"] = success_flags
+        infos["fail"] = fail_flags
+        infos["timeout_fail"] = timeout_fail
         intervene_flag = np.zeros(self.num_envs, dtype=bool)
         if "intervene_action" in infos:
             for env_id in range(self.num_envs):
@@ -287,6 +308,9 @@ class RealWorldEnv(gym.Env):
         infos["intervene_action"] = to_tensor(intervene_action)
         infos["intervene_flag"] = to_tensor(intervene_flag)
         infos["data_valid"] = to_tensor(data_valid)
+        infos["success"] = to_tensor(success_flags)
+        infos["fail"] = to_tensor(fail_flags)
+        infos["timeout_fail"] = to_tensor(timeout_fail)
 
         dones = terminations | truncations
         _auto_reset = auto_reset and self.auto_reset

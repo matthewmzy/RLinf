@@ -20,6 +20,7 @@ import os
 import pickle
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 import dill
@@ -34,9 +35,28 @@ from rlinf.models.embodiment.modules.q_head import MultiQHead
 
 logger = logging.getLogger(__name__)
 
-_PSI_POLICY_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "../../../../psi-policy")
-)
+def _resolve_psi_policy_root() -> str:
+    current_file = Path(__file__).resolve()
+    candidates: list[Path] = []
+
+    env_override = os.environ.get("PSI_POLICY_ROOT")
+    if env_override:
+        candidates.append(Path(env_override).expanduser().resolve())
+
+    candidates.extend(
+        [
+            current_file.parents[4] / "psi-policy",
+            current_file.parents[5] / "psi-policy",
+        ]
+    )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return str(candidates[0])
+
+
+_PSI_POLICY_ROOT = _resolve_psi_policy_root()
 if _PSI_POLICY_ROOT not in sys.path:
     sys.path.insert(0, _PSI_POLICY_ROOT)
 
@@ -711,7 +731,11 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             .mul(self._get_rl_action_mask(chunks_norm[:, 0, :]))
             .sum(dim=-1)
         )
-        chunk_values = torch.zeros_like(log_prob[..., :1])
+        chunk_values = torch.zeros(
+            (log_prob.shape[0], 1),
+            device=log_prob.device,
+            dtype=log_prob.dtype,
+        )
         forward_inputs = {"action": chunk_actions[:, 0, :]}
         if return_obs:
             forward_inputs["main_images"] = env_obs["main_images"]

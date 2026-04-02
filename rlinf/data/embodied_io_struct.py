@@ -44,6 +44,14 @@ def get_model_weights_id(versions: torch.Tensor) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_DNS, name_bytes.hex()))
 
 
+def _to_cpu_tensor(value: Any) -> Optional[torch.Tensor]:
+    if value is None:
+        return None
+    if not isinstance(value, torch.Tensor):
+        value = torch.as_tensor(value)
+    return value.cpu().contiguous()
+
+
 @dataclass(kw_only=True)
 class EnvOutput:
     """Environment output for a single chunk step."""
@@ -66,35 +74,15 @@ class EnvOutput:
             if self.final_obs is not None
             else None
         )
-        self.dones = self.dones.cpu().contiguous() if self.dones is not None else None
-        self.terminations = (
-            self.terminations.cpu().contiguous()
-            if self.terminations is not None
-            else None
-        )
-        self.truncations = (
-            self.truncations.cpu().contiguous()
-            if self.truncations is not None
-            else None
-        )
-        self.rewards = (
-            self.rewards.cpu().contiguous() if self.rewards is not None else None
-        )
-        self.intervene_actions = (
-            self.intervene_actions.cpu().contiguous()
-            if self.intervene_actions is not None
-            else None
-        )
-        self.intervene_flags = (
-            self.intervene_flags.cpu().contiguous()
-            if self.intervene_flags is not None
-            else None
-        )
-        self.transition_valids = (
-            self.transition_valids.cpu().contiguous()
-            if self.transition_valids is not None
-            else None
-        )
+        self.dones = _to_cpu_tensor(self.dones)
+        self.terminations = _to_cpu_tensor(self.terminations)
+        self.truncations = _to_cpu_tensor(self.truncations)
+        self.rewards = _to_cpu_tensor(self.rewards)
+        self.intervene_actions = _to_cpu_tensor(self.intervene_actions)
+        self.intervene_flags = _to_cpu_tensor(self.intervene_flags)
+        self.transition_valids = _to_cpu_tensor(self.transition_valids)
+        if self.transition_valids is not None and self.transition_valids.dim() == 1:
+            self.transition_valids = self.transition_valids.unsqueeze(-1)
 
     def prepare_observations(self, obs: dict[str, Any]) -> dict[str, Any]:
         image_tensor = obs["main_images"] if "main_images" in obs else None

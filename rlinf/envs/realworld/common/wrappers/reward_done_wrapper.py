@@ -37,13 +37,16 @@ class BaseKeyboardRewardDoneWrapper(gym.Wrapper):
         """Modifies the :attr:`env` :meth:`step` reward using :meth:`self.reward`."""
         observation, reward, terminated, truncated, info = self.env.step(action)
         last_intervened, updated_reward, updated_terminated = self.reward_terminated()
+        info = dict(info)
+        info["success"] = bool(updated_terminated and updated_reward > 0)
+        info["fail"] = bool(updated_terminated and updated_reward < 0)
         if last_intervened or self.reward_mode == "always_replace":
             reward = updated_reward
         return observation, reward, updated_terminated, truncated, info
 
     def reward_terminated(
         self,
-    ) -> tuple[float, bool]:
+    ) -> tuple[bool, float, bool]:
         last_intervened, terminated, keyboard_reward = self._check_keypress()
         return last_intervened, keyboard_reward, terminated
 
@@ -54,22 +57,18 @@ class KeyboardRewardDoneWrapper(BaseKeyboardRewardDoneWrapper):
         done = False
         reward = 0
         key = self.listener.get_key()
-        print(f"Key pressed: {key}")
-        if key not in ["a", "b", "c"]:
+        if key is not None:
+            print(f"Key pressed: {key}")
+        if key not in ["f", "s"]:
             return last_intervened, done, reward
 
         last_intervened = True
-        if key == "a":
+        if key == "f":
             reward = -1
             done = True
-            last_intervened = True
-        elif key == "b":
-            reward = 0
-            last_intervened = True
-        elif key == "c":
+        elif key == "s":
             reward = 1
             done = True
-            last_intervened = True
         return last_intervened, done, reward
 
 
@@ -87,7 +86,8 @@ class KeyboardRewardDoneMultiStageWrapper(BaseKeyboardRewardDoneWrapper):
         done = False
         reward = 0
         key = self.listener.get_key()
-        print(f"Key pressed: {key}")
+        if key is not None:
+            print(f"Key pressed: {key}")
         if key == "a":
             self.reward_stage = 0
         elif key == "b":

@@ -47,26 +47,42 @@ class NoAutoResetSyncVectorEnv(SyncVectorEnv):
         """
         self._actions = actions
         observations, infos = [], {}
+        terminations = getattr(self, "_terminations", None)
+        truncations = getattr(self, "_truncations", None)
+        if terminations is None:
+            terminations = self._terminateds
+        if truncations is None:
+            truncations = self._truncateds
+        env_obs = getattr(self, "_env_obs", None)
         for i, (env, action) in enumerate(zip(self.envs, self._actions)):
             (
                 observation,
                 self._rewards[i],
-                self._terminateds[i],
-                self._truncateds[i],
+                terminations[i],
+                truncations[i],
                 info,
             ) = env.step(action)
-
+            if env_obs is not None:
+                env_obs[i] = observation
             observations.append(observation)
             infos = self._add_info(infos, info, i)
-        self.observations = concatenate(
-            self.single_observation_space, observations, self.observations
+        observation_buffer_name = (
+            "_observations" if hasattr(self, "_observations") else "observations"
         )
+        stacked_observations = concatenate(
+            self.single_observation_space,
+            env_obs if env_obs is not None else observations,
+            getattr(self, observation_buffer_name),
+        )
+        setattr(self, observation_buffer_name, stacked_observations)
+        if hasattr(self, "_autoreset_envs"):
+            self._autoreset_envs = np.logical_or(terminations, truncations)
 
         return (
-            deepcopy(self.observations) if self.copy else self.observations,
+            deepcopy(stacked_observations) if self.copy else stacked_observations,
             np.copy(self._rewards),
-            np.copy(self._terminateds),
-            np.copy(self._truncateds),
+            np.copy(terminations),
+            np.copy(truncations),
             infos,
         )
 
