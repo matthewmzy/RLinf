@@ -131,6 +131,19 @@ env:
       policy_action_dim: 26
       normalize_actions: False
       clip_policy_actions: False
+      reset_controller_action:
+        [
+          0.43599599599838257, 0.40000006556510925,
+          1.483843207359314, -0.6396821141242981, -0.6142574548721313, -1.4895319938659668,
+          1.0360413789749146, -0.8038167953491211, -1.021767258644104, -1.4656429290771484,
+          0.8815041780471802, 0.1507505476474762, 1.0609948635101318, -1.4735652208328247,
+          1.2199993133544922, 1.6188714504241943, 0.006837606895714998, 0.0,
+          0.13968254625797272, 0.17142857611179352, 0.9335775375366211, 1.0,
+          0.0, 0.0063492064364254475, 0.0, 0.0014652014942839742,
+          0.9982905983924866, 0.9982905983924866,
+        ]
+      reset_move_timeout_s: 12.0
+      reset_tolerance: 0.03
       model_control_modes: [0]
       teleop_control_modes: [1]
       idle_control_modes: [99]
@@ -180,6 +193,19 @@ env:
       policy_action_dim: 26
       normalize_actions: False
       clip_policy_actions: False
+      reset_controller_action:
+        [
+          0.43599599599838257, 0.40000006556510925,
+          1.483843207359314, -0.6396821141242981, -0.6142574548721313, -1.4895319938659668,
+          1.0360413789749146, -0.8038167953491211, -1.021767258644104, -1.4656429290771484,
+          0.8815041780471802, 0.1507505476474762, 1.0609948635101318, -1.4735652208328247,
+          1.2199993133544922, 1.6188714504241943, 0.006837606895714998, 0.0,
+          0.13968254625797272, 0.17142857611179352, 0.9335775375366211, 1.0,
+          0.0, 0.0063492064364254475, 0.0, 0.0014652014942839742,
+          0.9982905983924866, 0.9982905983924866,
+        ]
+      reset_move_timeout_s: 12.0
+      reset_tolerance: 0.03
       model_control_modes: [0]
       teleop_control_modes: [1]
       idle_control_modes: [99]
@@ -227,7 +253,7 @@ rollout:
   collect_prev_infos: False
 
   model:
-    model_path: "/path/to/psi-policy-checkpoint"
+    model_path: "/home/psibot/workspace_zhiyuan/psi-policy/data/outputs/01.23_zjxc_v0.1_vit-small_rgb-state/checkpoints/epoch=2800-train_loss=0.14130-202603260123.ckpt"
     precision: ${actor.model.precision}
     num_q_heads: 2
 
@@ -244,8 +270,8 @@ actor:
   enable_offload: False
 
   model:
-    model_path: "/path/to/psi-policy-checkpoint"
-    normalizer_path: "/path/to/normalizer.pkl"
+    model_path: "/home/psibot/workspace_zhiyuan/psi-policy/data/outputs/01.23_zjxc_v0.1_vit-small_rgb-state/checkpoints/epoch=2800-train_loss=0.14130-202603260123.ckpt"
+    normalizer_path: "/home/psibot/workspace_zhiyuan/psi-policy/data/outputs/01.23_zjxc_v0.1_vit-small_rgb-state/normalizer.pkl"
     action_dim: 26
     num_action_chunks: 8  # match psi-policy client execute_step
     num_q_heads: 2
