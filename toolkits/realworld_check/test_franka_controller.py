@@ -71,6 +71,10 @@ _HELP_TEXT = f"""\
   {_CYAN}gethand{_RESET}         Get finger positions (normalised [0,1])
   {_CYAN}gethand_detail{_RESET}  Get detailed hand state (pos/vel/current/status)
   {_CYAN}handinfo{_RESET}        Show hand config (type/port/baudrate/DOF)
+  {_YELLOW}movejoints j0 j1 j2 j3 j4 j5 j6{_RESET}
+                    Move arm to target joint positions (7 floats)
+  {_YELLOW}sethand h0 h1 h2 h3 h4 h5{_RESET}
+                    Set hand finger positions (normalised [0,1])
   {_GREEN}state{_RESET}           Show full robot state
   {_GREEN}help{_RESET}            Show this help
   {_GREEN}q{_RESET}               Quit
@@ -262,6 +266,45 @@ def main():
                 else:
                     print(f"  Hand type:     {hand_type}")
                     _handle_gethand(controller)
+            elif cmd_str.startswith("movejoints"):
+                parts = cmd_str.split()
+                if len(parts) != 8:
+                    print(f"{_RED}Usage: movejoints j0 j1 j2 j3 j4 j5 j6  (7 floats){_RESET}")
+                else:
+                    joints = [float(x) for x in parts[1:]]
+                    print(f"  Target joints: {_fmt_arr(joints)}")
+                    cur_joints = controller.get_state().wait()[0].arm_joint_position
+                    print(f"  Current joints: {_fmt_arr(cur_joints)}")
+                    confirm = input(f"  {_YELLOW}Confirm move? (y/n): {_RESET}").strip().lower()
+                    if confirm == "y":
+                        print("  Moving to target joint positions ...")
+                        controller.reset_joint(joints).wait()
+                        new_state = controller.get_state().wait()[0]
+                        print(f"  {_GREEN}Done.{_RESET}")
+                        print(f"  New joint pos: {_fmt_arr(new_state.arm_joint_position)}")
+                        tcp = new_state.tcp_pose
+                        r = R.from_quat(tcp[3:].copy())
+                        euler = r.as_euler("xyz")
+                        print(f"  New TCP (euler): {_fmt_arr(np.concatenate([tcp[:3], euler]))}")
+                    else:
+                        print("  Cancelled.")
+            elif cmd_str.startswith("sethand"):
+                parts = cmd_str.split()
+                hand_type = controller.get_hand_type().wait()[0]
+                if hand_type == "franka_gripper":
+                    print(f"{_RED}sethand is not supported for franka_gripper{_RESET}")
+                elif len(parts) < 2:
+                    print(f"{_RED}Usage: sethand h0 h1 h2 ... (normalised [0,1] per finger){_RESET}")
+                else:
+                    targets = [float(x) for x in parts[1:]]
+                    print(f"  Target hand: {_fmt_arr(targets)}")
+                    confirm = input(f"  {_YELLOW}Confirm? (y/n): {_RESET}").strip().lower()
+                    if confirm == "y":
+                        controller.reset_end_effector(targets).wait()
+                        print(f"  {_GREEN}Done.{_RESET}")
+                        _handle_gethand(controller)
+                    else:
+                        print("  Cancelled.")
             else:
                 print(f"{_YELLOW}Unknown command: {cmd_str}  (type help for available commands){_RESET}")
         except KeyboardInterrupt:
