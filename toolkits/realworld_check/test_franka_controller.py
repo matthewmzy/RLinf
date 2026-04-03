@@ -278,8 +278,13 @@ def main():
                     if confirm == "y":
                         print("  Moving to target joint positions ...")
                         controller.reset_joint(target).wait()
-                        time.sleep(2.0)
-                        new_state = controller.get_state().wait()[0]
+                        # Wait for ROS state channel to reconnect after controller restart
+                        print("  Waiting for state to stabilize ...")
+                        for _ in range(10):
+                            time.sleep(1.0)
+                            new_state = controller.get_state().wait()[0]
+                            if np.allclose(new_state.arm_joint_position, target, atol=0.02):
+                                break
                         print(f"  {_GREEN}Done.{_RESET}")
                         print(f"  New joint pos: {_fmt_arr(new_state.arm_joint_position)}")
                         tcp = new_state.tcp_pose
