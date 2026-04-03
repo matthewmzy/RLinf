@@ -477,7 +477,8 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
                 f"Checkpoint action_dim={policy.action_dim} does not match config action_dim={self.cfg.action_dim}."
             )
 
-        self.shape_meta = cfg.shape_meta
+        self.shape_meta = copy.deepcopy(cfg.shape_meta)
+        self._sync_runtime_cfg_from_checkpoint(cfg, policy)
         logger.info(
             "Loaded psi-policy checkpoint with obs_horizon=%s, action_horizon=%s, encoder_target=%s",
             cfg.n_obs_steps,
@@ -485,6 +486,151 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             cfg.policy.obs_encoder._target_,
         )
         return policy
+
+    def _sync_runtime_cfg_from_checkpoint(self, workspace_cfg, policy: PsiPolicy) -> None:
+        self.cfg.obs_horizon = int(getattr(workspace_cfg, "n_obs_steps", self.cfg.obs_horizon))
+        self.cfg.action_horizon = int(
+            getattr(workspace_cfg, "n_action_steps", policy.action_horizon)
+        )
+
+        obs_meta = self.shape_meta.get("obs", {})
+        image_key = next(
+            (
+                key
+                for key in ("rgb_head", "h264_head", "rgb_left_hand", "h264_left_hand")
+                if key in obs_meta
+            ),
+            None,
+        )
+        if image_key is not None:
+            image_shape = obs_meta[image_key].get("shape", [])
+            if len(image_shape) >= 3:
+                self.cfg.image_size = int(image_shape[1])
+
+        self.cfg._update_info()
+
+    def _get_runtime_obs_horizon(self) -> int:
+        obs_meta = self.shape_meta.get("obs", {})
+        for key in (
+            "rgb_head",
+            "h264_head",
+            "rgb_left_hand",
+            "h264_left_hand",
+            "right_arm_states",
+            "left_arm_states",
+        ):
+            if key in obs_meta and "horizon" in obs_meta[key]:
+                return int(obs_meta[key]["horizon"])
+        return int(self.cfg.obs_horizon)
+
+    def _get_image_obs_keys(self) -> dict[str, str]:
+        obs_meta = self.shape_meta.get("obs", {})
+
+        def _pick(*candidates: str) -> str:
+            for key in candidates:
+                if key in obs_meta:
+                    return key
+            return candidates[0]
+
+        return {
+            "main": _pick("rgb_head", "h264_head"),
+            "left": _pick("rgb_left_hand", "h264_left_hand"),
+            "right": _pick("rgb_right_hand", "h264_right_hand"),
+        }
+
+    def _get_image_target_size(self, obs_key: str) -> tuple[int, int]:
+        image_shape = self.shape_meta["obs"][obs_key]["shape"]
+        return int(image_shape[1]), int(image_shape[2])
+
+    def _pad_or_truncate_time(
+        self, tensor: torch.Tensor, target_horizon: int
+    ) -> torch.Tensor:
+        current_horizon = int(tensor.shape[1])
+        if current_horizon == target_horizon:
+            return tensor
+        if current_horizon > target_horizon:
+            return tensor[:, -target_horizon:]
+
+        pad_size = target_horizon - current_horizon
+        padding = tensor[:, :1].expand(-1, pad_size, *tensor.shape[2:])
+        return torch.cat([padding, tensor], dim=1)
+
+    def _to_btd(self, states: torch.Tensor, target_horizon: int) -> torch.Tensor:
+        if states.ndim == 2:
+            states = states.unsqueeze(1)
+        if states.ndim != 3:
+            raise ValueError(
+                f"psi-policy states must have shape [B, D] or [B, T, D], got {tuple(states.shape)}."
+            )
+        states = self._pad_or_truncate_time(states, target_horizon)
+        return states.to(device=self.device, dtype=torch.float32).contiguous()
+
+    def _to_btchw(
+        self, image: torch.Tensor, target_horizon: int, target_size: tuple[int, int]
+    ) -> torch.Tensor:
+        if image.ndim == 4:
+            image = image.unsqueeze(1)
+        if image.ndim != 5:
+            raise ValueError(
+                "psi-policy images must have shape [B, H, W, C], [B, T, H, W, C], "
+                f"[B, C, H, W], or [B, T, C, H, W], got {tuple(image.shape)}."
+            )
+
+        if image.shape[-1] in (3, 4):
+            image = image[..., :3]
+            image = image.permute(0, 1, 4, 2, 3)
+        elif image.shape[-3] in (3, 4):
+            image = image[..., :3, :, :]
+        else:
+            raise ValueError(
+                "psi-policy images must have 3 or 4 channels in the last or third-last dim, "
+                f"got shape {tuple(image.shape)}."
+            )
+
+        image = self._pad_or_truncate_time(image, target_horizon)
+        image = image.to(device=self.device, dtype=torch.float32)
+        if torch.any(image > 1.0):
+            image = image / 255.0
+
+        batch_size, horizon = image.shape[:2]
+        image = image.reshape(batch_size * horizon, *image.shape[2:])
+        if tuple(image.shape[-2:]) != target_size:
+            image = F.interpolate(
+                image,
+                size=target_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+        return image.reshape(batch_size, horizon, image.shape[1], *target_size).contiguous()
+
+    def _select_extra_view(self, extra_view_images: torch.Tensor, view_index: int) -> torch.Tensor:
+        if extra_view_images.ndim == 5:
+            return extra_view_images[:, view_index]
+        if extra_view_images.ndim == 6:
+            return extra_view_images[:, :, view_index]
+        raise ValueError(
+            "psi-policy extra_view_images must have shape [B, N, H, W, C] or "
+            f"[B, T, N, H, W, C], got {tuple(extra_view_images.shape)}."
+        )
+
+    def _flatten_chunk_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
+        return tensor.reshape(tensor.shape[0], -1).contiguous()
+
+    def _compute_chunk_logprobs(
+        self,
+        action_chunks_mean_norm: torch.Tensor,
+        action_chunks_norm: torch.Tensor,
+        noise_std: float,
+    ) -> torch.Tensor:
+        if noise_std <= 0:
+            return torch.zeros_like(action_chunks_norm)
+
+        rl_action_mask = self._get_rl_action_mask(action_chunks_norm).view(1, 1, -1)
+        return (
+            Normal(action_chunks_mean_norm.detach(), noise_std)
+            .log_prob(action_chunks_norm.detach())
+            .mul(rl_action_mask)
+        )
 
     def _override_policy_normalizer(self, policy: PsiPolicy, normalizer_path: str) -> None:
         logger.info("Overriding psi-policy normalizer from: %s", normalizer_path)
@@ -501,52 +647,58 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         )
 
     def preprocess_env_obs(self, env_obs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        device = self.device
+        obs_horizon = self._get_runtime_obs_horizon()
+        image_obs_keys = self._get_image_obs_keys()
 
-        def _to_btchw(image: torch.Tensor) -> torch.Tensor:
-            if image.ndim == 4:
-                image = image.unsqueeze(1)
-            if image.shape[-1] == 3:
-                image = image.permute(0, 1, 4, 2, 3)
-            image = image.to(device=device, dtype=torch.float32)
-            if image.max() > 1.0:
-                image = image / 255.0
-            target_size = tuple(self.shape_meta["obs"]["rgb_head"]["shape"][1:])
-            image = image.reshape(-1, image.shape[-3], image.shape[-2], image.shape[-1])
-            image = F.interpolate(
-                image,
-                size=target_size,
-                mode="bilinear",
-                align_corners=False,
+        main_images = torch.as_tensor(env_obs["main_images"])
+        processed = {
+            image_obs_keys["main"]: self._to_btchw(
+                main_images,
+                target_horizon=obs_horizon,
+                target_size=self._get_image_target_size(image_obs_keys["main"]),
             )
-            image = image * 2.0 - 1.0
-            return image.reshape(
-                -1,
-                self.cfg.obs_horizon,
-                self.shape_meta["obs"]["rgb_head"]["shape"][0],
-                target_size[0],
-                target_size[1],
-            )
+        }
 
-        processed = {"rgb_head": _to_btchw(env_obs["main_images"])}
         extra_view_images = env_obs.get("extra_view_images")
         if extra_view_images is not None:
-            processed["rgb_left_hand"] = _to_btchw(extra_view_images[:, 0])
-            processed["rgb_right_hand"] = _to_btchw(extra_view_images[:, 1])
+            extra_view_images = torch.as_tensor(extra_view_images)
+            processed[image_obs_keys["left"]] = self._to_btchw(
+                self._select_extra_view(extra_view_images, 0),
+                target_horizon=obs_horizon,
+                target_size=self._get_image_target_size(image_obs_keys["left"]),
+            )
+            processed[image_obs_keys["right"]] = self._to_btchw(
+                self._select_extra_view(extra_view_images, 1),
+                target_horizon=obs_horizon,
+                target_size=self._get_image_target_size(image_obs_keys["right"]),
+            )
         else:
-            processed["rgb_left_hand"] = processed["rgb_head"].clone()
-            processed["rgb_right_hand"] = processed["rgb_head"].clone()
+            processed[image_obs_keys["left"]] = processed[image_obs_keys["main"]].clone()
+            processed[image_obs_keys["right"]] = processed[image_obs_keys["main"]].clone()
 
-        states = env_obs["states"].to(device=device, dtype=torch.float32)
+        states = self._to_btd(torch.as_tensor(env_obs["states"]), target_horizon=obs_horizon)
         if states.shape[-1] < self.cfg.action_dim:
             raise ValueError(
                 f"psi-policy expects at least {self.cfg.action_dim} state dims from A2D, got {states.shape[-1]}."
             )
+
         ss = self.cfg.state_split
-        processed["right_arm_states"] = states[:, ss["right_arm"][0] : ss["right_arm"][1]].unsqueeze(1)
-        processed["left_arm_states"] = states[:, ss["left_arm"][0] : ss["left_arm"][1]].unsqueeze(1)
-        processed["left_hand_states"] = states[:, ss["left_hand"][0] : ss["left_hand"][1]].unsqueeze(1)
-        processed["right_hand_states"] = states[:, ss["right_hand"][0] : ss["right_hand"][1]].unsqueeze(1)
+        state_slices = {
+            "right_arm_states": slice(ss["right_arm"][0], ss["right_arm"][1]),
+            "left_arm_states": slice(ss["left_arm"][0], ss["left_arm"][1]),
+            "left_hand_states": slice(ss["left_hand"][0], ss["left_hand"][1]),
+            "right_hand_states": slice(ss["right_hand"][0], ss["right_hand"][1]),
+            "waist_joints_states": slice(self.cfg.action_dim, self.cfg.action_dim + 2),
+        }
+        for key, state_slice in state_slices.items():
+            if key not in self.shape_meta["obs"]:
+                continue
+            if states.shape[-1] < state_slice.stop:
+                raise ValueError(
+                    f"psi-policy expects env states to include dims up to {state_slice.stop} for '{key}', "
+                    f"got {states.shape[-1]}."
+                )
+            processed[key] = states[:, :, state_slice].contiguous()
         return processed
 
     def encode_obs(self, obs: dict[str, torch.Tensor], detach_encoder: bool = False):
@@ -596,6 +748,13 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
 
     def _sample_masked_action(self, action_mean_norm: torch.Tensor, noise_std: float):
         rl_action_mask = self._get_rl_action_mask(action_mean_norm)
+        if noise_std <= 0:
+            zero_log_prob = torch.zeros(
+                action_mean_norm.shape[0],
+                device=action_mean_norm.device,
+                dtype=action_mean_norm.dtype,
+            )
+            return action_mean_norm, action_mean_norm, zero_log_prob
         sampled_action_norm = action_mean_norm + noise_std * torch.randn_like(
             action_mean_norm
         ) * rl_action_mask
@@ -614,6 +773,8 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
     def _sample_masked_action_chunks(
         self, action_chunks_mean_norm: torch.Tensor, noise_std: float
     ) -> torch.Tensor:
+        if noise_std <= 0:
+            return action_chunks_mean_norm
         rl_action_mask = self._get_rl_action_mask(action_chunks_mean_norm).view(1, 1, -1)
         return action_chunks_mean_norm + noise_std * torch.randn_like(
             action_chunks_mean_norm
@@ -674,7 +835,14 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             obs_feature = shared_feature.detach() if detach_encoder else shared_feature
         return self.q_head(obs_feature, actions)
 
-    def default_forward(self, forward_inputs=None, **kwargs):
+    def default_forward(
+        self,
+        forward_inputs=None,
+        compute_logprobs=True,
+        compute_entropy=False,
+        compute_values=False,
+        **kwargs,
+    ):
         del kwargs
         if forward_inputs is None:
             raise ValueError("forward_inputs is required for psi-policy rollout forward.")
@@ -690,19 +858,52 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         cond_tokens, _ = self.encode_obs(obs)
         action_chunks_mean_norm = self._sample_action_chunks(cond_tokens, training=False)
         noise_std = self.cfg.noise_std_rollout
-        action_chunks_norm = self._sample_masked_action_chunks(
-            action_chunks_mean_norm, noise_std
+        provided_action = forward_inputs.get("action")
+        if provided_action is not None:
+            provided_action = provided_action.to(device=self.device, dtype=torch.float32)
+            if provided_action.ndim == 2:
+                provided_action = provided_action.reshape(provided_action.shape[0], -1, self.action_dim)
+            if provided_action.ndim != 3 or provided_action.shape[-1] != self.action_dim:
+                raise ValueError(
+                    "psi-policy forward_inputs['action'] must have shape [B, chunk*action_dim] or "
+                    f"[B, chunk, action_dim], got {tuple(provided_action.shape)}."
+                )
+            num_chunks = int(provided_action.shape[1])
+            action_chunks = provided_action[:, :num_chunks].contiguous()
+            action_chunks_norm = self.normalizer["action"].normalize(action_chunks)
+        else:
+            num_chunks = self.cfg.num_action_chunks
+            action_chunks_mean_norm = action_chunks_mean_norm[:, :num_chunks]
+            action_chunks_norm = self._sample_masked_action_chunks(
+                action_chunks_mean_norm, noise_std
+            )
+            action_chunks = self.normalizer["action"].unnormalize(action_chunks_norm)
+            action_chunks = self._apply_reset_pose_mask(action_chunks, forward_inputs)
+
+        action_chunks_mean_norm = action_chunks_mean_norm[:, :num_chunks]
+        logprobs = self._compute_chunk_logprobs(
+            action_chunks_mean_norm,
+            action_chunks_norm,
+            noise_std,
         )
-        action_norm = action_chunks_norm[:, 0, :]
-        action = self.normalizer["action"].unnormalize(action_norm.unsqueeze(1)).squeeze(1)
-        action = self._apply_reset_pose_mask(action, forward_inputs)
-        log_prob = (
-            Normal(action_chunks_mean_norm[:, 0, :].detach(), noise_std)
-            .log_prob(action_norm.detach())
-            .mul(self._get_rl_action_mask(action_norm))
-            .sum(dim=-1)
-        )
-        return {"action": action, "log_prob": log_prob}
+
+        output = {
+            "action": action_chunks[:, 0, :],
+            "log_prob": logprobs[:, 0, :].sum(dim=-1),
+        }
+        if compute_logprobs:
+            output["logprobs"] = logprobs
+        if compute_entropy:
+            if noise_std <= 0:
+                output["entropy"] = torch.zeros_like(logprobs)
+            else:
+                rl_action_mask = self._get_rl_action_mask(action_chunks_mean_norm).view(1, 1, -1)
+                output["entropy"] = (
+                    Normal(action_chunks_mean_norm.detach(), noise_std).entropy().mul(rl_action_mask)
+                )
+        if compute_values:
+            raise NotImplementedError("psi-policy does not expose a value head for default_forward.")
+        return output
 
     @torch.no_grad()
     def predict_action_batch(
@@ -723,20 +924,23 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             action_chunks_mean_norm, noise_std
         )
         chunks_norm = action_chunks_norm[:, : self.cfg.num_action_chunks, :]
-        chunk_actions = self.normalizer["action"].unnormalize(chunks_norm)
+        model_chunk_actions = self.normalizer["action"].unnormalize(chunks_norm)
+        chunk_actions = model_chunk_actions
         chunk_actions = self._apply_reset_pose_mask(chunk_actions, env_obs)
-        log_prob = (
-            Normal(action_chunks_mean_norm[:, 0, :].detach(), noise_std)
-            .log_prob(chunks_norm[:, 0, :].detach())
-            .mul(self._get_rl_action_mask(chunks_norm[:, 0, :]))
-            .sum(dim=-1)
+        chunk_logprobs = self._compute_chunk_logprobs(
+            action_chunks_mean_norm[:, : self.cfg.num_action_chunks, :],
+            chunks_norm,
+            noise_std,
         )
         chunk_values = torch.zeros(
-            (log_prob.shape[0], 1),
-            device=log_prob.device,
-            dtype=log_prob.dtype,
+            (chunk_actions.shape[0], 1),
+            device=chunk_actions.device,
+            dtype=chunk_actions.dtype,
         )
-        forward_inputs = {"action": chunk_actions[:, 0, :]}
+        forward_inputs = {
+            "action": self._flatten_chunk_tensor(chunk_actions),
+            "model_action": self._flatten_chunk_tensor(model_chunk_actions),
+        }
         if return_obs:
             forward_inputs["main_images"] = env_obs["main_images"]
             forward_inputs["states"] = env_obs["states"]
@@ -745,7 +949,7 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             if "extra_view_images" in env_obs:
                 forward_inputs["extra_view_images"] = env_obs["extra_view_images"]
         result = {
-            "prev_logprobs": log_prob,
+            "prev_logprobs": chunk_logprobs,
             "prev_values": chunk_values,
             "forward_inputs": forward_inputs,
         }

@@ -429,147 +429,376 @@ class Trajectory:
                 f"Reference tensor length {ref_tensor.shape[0]} < traj_len {traj_len}"
             )
 
-    def extract_intervene_traj(self, mode="any"):
-        if self.intervene_flags is None or (~self.intervene_flags).all():
+    @staticmethod
+    def _normalize_chunk_mask(mask: torch.Tensor) -> torch.Tensor:
+        mask = mask.to(dtype=torch.bool)
+        if mask.dim() == 1:
+            mask = mask.unsqueeze(-1)
+        if mask.dim() == 2:
+            mask = mask.unsqueeze(-1)
+        assert mask.dim() == 3, f"Expected 3D chunk mask, got {mask.shape=}"
+        return mask
+
+    @staticmethod
+    def _align_field_with_traj_len(
+        tensor: torch.Tensor | None, traj_len: int, field_name: str
+    ) -> torch.Tensor | None:
+        if tensor is None:
             return None
 
-        if mode == "any":
-            mask = self.intervene_flags.any(dim=-1)
-        elif mode == "all":
-            mask = self.intervene_flags.all(dim=-1)
-        else:
-            raise NotImplementedError(
-                f"Unsupported extract_intervene_traj mode: {mode}"
+        if tensor.shape[0] == traj_len:
+            return tensor
+
+        if tensor.shape[0] > traj_len:
+            extra = int(tensor.shape[0] - traj_len)
+            assert traj_len % extra == 0, (
+                f"Trajectory length {traj_len} is not divisible by extra {extra} "
+                f"for field {field_name}"
             )
-        assert mask.dim() == 2, (
-            f"Expected 2D mask after processing (traj len, bsz), got {mask.shape=}"
+            epoch_len = traj_len // extra
+            return tensor.reshape(
+                extra, epoch_len + 1, *tensor.shape[1:]
+            )[:, 1:].reshape(traj_len, *tensor.shape[1:])
+
+        raise ValueError(
+            f"Reference tensor length {tensor.shape[0]} < traj_len {traj_len} for field {field_name}"
         )
-        traj_len = int(mask.shape[0])
 
-        def apply_mask(tensor, i):
-            return tensor[:, i][mask[:, i]].unsqueeze(1) if tensor is not None else None
+    @staticmethod
+    def _infer_num_action_chunks(
+        mask: torch.Tensor | None, fallback_tensor: torch.Tensor | None
+    ) -> int:
+        if mask is not None and mask.dim() == 3:
+            return int(mask.shape[-1])
+        if (
+            fallback_tensor is not None
+            and fallback_tensor.dim() >= 3
+            and fallback_tensor.shape[-1] > 0
+        ):
+            return int(fallback_tensor.shape[-1])
+        return 1
 
-        def apply_mask_to_dict(d, i):
-            return (
-                {k: v[:, i][mask[:, i]].unsqueeze(1) for k, v in d.items()} if d else {}
+    @staticmethod
+    def _reshape_action_like_tensor(
+        tensor: torch.Tensor | None,
+        *,
+        traj_len: int,
+        num_chunks: int,
+        field_name: str,
+    ) -> torch.Tensor | None:
+        tensor = Trajectory._align_field_with_traj_len(tensor, traj_len, field_name)
+        if tensor is None:
+            return None
+        assert tensor.dim() == 3, (
+            f"Expected 3D tensor for field '{field_name}', got {tensor.shape=}"
+        )
+        assert tensor.shape[-1] % num_chunks == 0, (
+            f"Field '{field_name}' last dim {tensor.shape[-1]} is not divisible by "
+            f"{num_chunks=}"
+        )
+        return tensor.reshape(traj_len, tensor.shape[1], num_chunks, -1)
+
+    @staticmethod
+    def _reshape_chunk_scalar_tensor(
+        tensor: torch.Tensor | None,
+        *,
+        traj_len: int,
+        num_chunks: int,
+        field_name: str,
+    ) -> torch.Tensor | None:
+        tensor = Trajectory._align_field_with_traj_len(tensor, traj_len, field_name)
+        if tensor is None:
+            return None
+        if tensor.dim() == 2:
+            tensor = tensor.unsqueeze(-1)
+        assert tensor.dim() == 3, (
+            f"Expected 3D tensor for field '{field_name}', got {tensor.shape=}"
+        )
+        if tensor.shape[-1] == 1 and num_chunks == 1:
+            return tensor
+        assert tensor.shape[-1] == num_chunks, (
+            f"Expected field '{field_name}' to have last dim {num_chunks}, got {tensor.shape=}"
+        )
+        return tensor
+
+    @staticmethod
+    def _reshape_repeated_chunk_tensor(
+        tensor: torch.Tensor | None,
+        *,
+        traj_len: int,
+        num_chunks: int,
+        field_name: str,
+    ) -> torch.Tensor | None:
+        tensor = Trajectory._align_field_with_traj_len(tensor, traj_len, field_name)
+        if tensor is None:
+            return None
+        if tensor.dim() == 2:
+            tensor = tensor.unsqueeze(-1)
+        assert tensor.dim() == 3, (
+            f"Expected 3D tensor for field '{field_name}', got {tensor.shape=}"
+        )
+        return tensor.unsqueeze(2).expand(-1, -1, num_chunks, -1)
+
+    @staticmethod
+    def _reshape_logprob_tensor(
+        tensor: torch.Tensor | None,
+        *,
+        traj_len: int,
+        num_chunks: int,
+        field_name: str,
+    ) -> torch.Tensor | None:
+        tensor = Trajectory._align_field_with_traj_len(tensor, traj_len, field_name)
+        if tensor is None:
+            return None
+        if tensor.dim() == 3:
+            if num_chunks == 1:
+                return tensor.unsqueeze(2)
+            if tensor.shape[-1] == num_chunks:
+                return tensor.unsqueeze(-1)
+            assert tensor.shape[-1] % num_chunks == 0, (
+                f"Field '{field_name}' last dim {tensor.shape[-1]} is not divisible by "
+                f"{num_chunks=}"
             )
+            return tensor.reshape(traj_len, tensor.shape[1], num_chunks, -1)
+        assert tensor.dim() == 4 and tensor.shape[2] == num_chunks, (
+            f"Expected field '{field_name}' to have shape [T, B, {num_chunks}, ...], "
+            f"got {tensor.shape=}"
+        )
+        return tensor
+
+    @staticmethod
+    def _expand_obs_like_tensor(
+        tensor: torch.Tensor | None,
+        *,
+        traj_len: int,
+        num_chunks: int,
+        field_name: str,
+    ) -> torch.Tensor | None:
+        tensor = Trajectory._align_field_with_traj_len(tensor, traj_len, field_name)
+        if tensor is None:
+            return None
+        assert tensor.dim() >= 2, (
+            f"Expected tensor field '{field_name}' to have at least 2 dims, got {tensor.shape=}"
+        )
+        return tensor.unsqueeze(2).expand(-1, -1, num_chunks, *tensor.shape[2:])
+
+    def _extract_action_level_trajs(
+        self,
+        mask: torch.Tensor,
+    ) -> list["Trajectory"] | None:
+        mask = self._normalize_chunk_mask(mask)
+        if (~mask).all():
+            return None
+
+        traj_len, batch_size, num_chunks = mask.shape
+
+        actions = self._reshape_action_like_tensor(
+            self.actions,
+            traj_len=traj_len,
+            num_chunks=num_chunks,
+            field_name="actions",
+        )
+        intervene_flags = self._reshape_action_like_tensor(
+            self.intervene_flags,
+            traj_len=traj_len,
+            num_chunks=num_chunks,
+            field_name="intervene_flags",
+        )
+        transition_valids = self._reshape_chunk_scalar_tensor(
+            self.transition_valids,
+            traj_len=traj_len,
+            num_chunks=num_chunks,
+            field_name="transition_valids",
+        )
+        rewards = self._reshape_chunk_scalar_tensor(
+            self.rewards,
+            traj_len=traj_len,
+            num_chunks=num_chunks,
+            field_name="rewards",
+        )
+        prev_logprobs = self._reshape_logprob_tensor(
+            self.prev_logprobs,
+            traj_len=traj_len,
+            num_chunks=num_chunks,
+            field_name="prev_logprobs",
+        )
+        prev_values = self._reshape_repeated_chunk_tensor(
+            self.prev_values,
+            traj_len=traj_len,
+            num_chunks=num_chunks,
+            field_name="prev_values",
+        )
+        versions = self._reshape_repeated_chunk_tensor(
+            self.versions,
+            traj_len=traj_len,
+            num_chunks=num_chunks,
+            field_name="versions",
+        )
+        terminations = self._reshape_chunk_scalar_tensor(
+            self.terminations,
+            traj_len=traj_len,
+            num_chunks=num_chunks,
+            field_name="terminations",
+        )
+        truncations = self._reshape_chunk_scalar_tensor(
+            self.truncations,
+            traj_len=traj_len,
+            num_chunks=num_chunks,
+            field_name="truncations",
+        )
+        dones = self._reshape_chunk_scalar_tensor(
+            self.dones,
+            traj_len=traj_len,
+            num_chunks=num_chunks,
+            field_name="dones",
+        )
+
+        forward_inputs = (
+            {
+                key: (
+                    self._reshape_action_like_tensor(
+                        value,
+                        traj_len=traj_len,
+                        num_chunks=num_chunks,
+                        field_name=f"forward_inputs.{key}",
+                    )
+                    if key in {"action", "model_action"}
+                    else self._expand_obs_like_tensor(
+                        value,
+                        traj_len=traj_len,
+                        num_chunks=num_chunks,
+                        field_name=f"forward_inputs.{key}",
+                    )
+                )
+                for key, value in self.forward_inputs.items()
+            }
+            if self.forward_inputs
+            else {}
+        )
+        curr_obs = (
+            {
+                key: self._expand_obs_like_tensor(
+                    value,
+                    traj_len=traj_len,
+                    num_chunks=num_chunks,
+                    field_name=f"curr_obs.{key}",
+                )
+                for key, value in self.curr_obs.items()
+            }
+            if self.curr_obs
+            else {}
+        )
+        next_obs = (
+            {
+                key: self._expand_obs_like_tensor(
+                    value,
+                    traj_len=traj_len,
+                    num_chunks=num_chunks,
+                    field_name=f"next_obs.{key}",
+                )
+                for key, value in self.next_obs.items()
+            }
+            if self.next_obs
+            else {}
+        )
+
+        def select(tensor: torch.Tensor | None, batch_idx: int) -> torch.Tensor | None:
+            if tensor is None:
+                return None
+            flat_tensor = tensor[:, batch_idx].reshape(
+                traj_len * num_chunks, *tensor.shape[3:]
+            )
+            selected = flat_tensor[mask[:, batch_idx].reshape(-1)]
+            return selected.unsqueeze(1)
+
+        def select_dict(
+            data: dict[str, torch.Tensor], batch_idx: int
+        ) -> dict[str, torch.Tensor]:
+            if not data:
+                return {}
+            return {
+                key: select(value, batch_idx) for key, value in data.items() if value is not None
+            }
 
         filtered_trajectories = []
-        for i in range(mask.shape[1]):
-            if not mask[:, i].any():
+        for batch_idx in range(batch_size):
+            flat_mask = mask[:, batch_idx].reshape(-1)
+            if not flat_mask.any():
                 continue
-
-            actions = apply_mask(self.actions, i)
-            rewards = apply_mask(self.rewards, i)
-            prev_logprobs = apply_mask(self.prev_logprobs, i)
-            prev_values = apply_mask(self.prev_values, i)
-            intervene_flags = apply_mask(self.intervene_flags, i)
-
-            forward_inputs = apply_mask_to_dict(self.forward_inputs, i)
-            curr_obs = apply_mask_to_dict(self.curr_obs, i)
-            next_obs = apply_mask_to_dict(self.next_obs, i)
-
-            terminations = truncations = dones = None
-            if self.terminations is not None:
-                field_mask = self._generate_field_mask(
-                    self.terminations[:, i : i + 1], mask[:, i], traj_len
-                )
-                terminations = self.terminations[:, i : i + 1][field_mask]
-                truncations = self.truncations[:, i : i + 1][field_mask]
-                dones = self.dones[:, i : i + 1][field_mask]
 
             filtered_trajectories.append(
                 Trajectory(
                     max_episode_length=self.max_episode_length,
                     model_weights_id=self.model_weights_id,
-                    actions=actions,
-                    intervene_flags=intervene_flags,
-                    rewards=rewards,
-                    terminations=terminations,
-                    truncations=truncations,
-                    dones=dones,
-                    prev_logprobs=prev_logprobs,
-                    prev_values=prev_values,
-                    forward_inputs=forward_inputs,
-                    curr_obs=curr_obs,
-                    next_obs=next_obs,
+                    actions=select(actions, batch_idx),
+                    intervene_flags=select(intervene_flags, batch_idx),
+                    transition_valids=select(transition_valids, batch_idx),
+                    rewards=select(rewards, batch_idx),
+                    terminations=select(terminations, batch_idx),
+                    truncations=select(truncations, batch_idx),
+                    dones=select(dones, batch_idx),
+                    prev_logprobs=select(prev_logprobs, batch_idx),
+                    prev_values=select(prev_values, batch_idx),
+                    versions=select(versions, batch_idx),
+                    forward_inputs=select_dict(forward_inputs, batch_idx),
+                    curr_obs=select_dict(curr_obs, batch_idx),
+                    next_obs=select_dict(next_obs, batch_idx),
                 )
             )
 
         return filtered_trajectories if filtered_trajectories else None
+
+    def extract_intervene_traj(self, mode="any"):
+        if self.intervene_flags is None or (~self.intervene_flags).all():
+            return None
+
+        num_chunks = self._infer_num_action_chunks(
+            self.transition_valids, self.rewards
+        )
+        flags = self._align_field_with_traj_len(
+            self.intervene_flags,
+            int(self.intervene_flags.shape[0]),
+            "intervene_flags",
+        )
+        assert flags is not None
+
+        if flags.dim() == 2:
+            flags = flags.unsqueeze(-1)
+        if flags.dim() == 3:
+            assert flags.shape[-1] % num_chunks == 0, (
+                f"intervene_flags last dim {flags.shape[-1]} is not divisible by "
+                f"{num_chunks=}"
+            )
+            flags = flags.reshape(flags.shape[0], flags.shape[1], num_chunks, -1)
+        else:
+            raise AssertionError(
+                f"Expected intervene_flags to be 2D or 3D, got {flags.shape=}"
+            )
+
+        if mode == "any":
+            mask = flags.any(dim=-1)
+        elif mode == "all":
+            mask = flags.all(dim=-1)
+        else:
+            raise NotImplementedError(
+                f"Unsupported extract_intervene_traj mode: {mode}"
+            )
+
+        mask = self._normalize_chunk_mask(mask)
+        if mask.shape[-1] == 1 and mask.all():
+            return [self]
+        return self._extract_action_level_trajs(mask)
 
     def extract_valid_traj(self):
         if self.transition_valids is None:
             return [self]
 
-        mask = self.transition_valids.to(dtype=torch.bool)
-        if mask.dim() == 1:
-            mask = mask.unsqueeze(-1)
-        assert mask.dim() == 2, (
-            f"Expected 2D transition_valids mask, got {mask.shape=}"
-        )
+        mask = self._normalize_chunk_mask(self.transition_valids)
         if (~mask).all():
             return None
-        if mask.all():
+        if mask.shape[-1] == 1 and mask.all():
             return [self]
-
-        traj_len = int(mask.shape[0])
-
-        def apply_mask(tensor, i):
-            return tensor[:, i][mask[:, i]].unsqueeze(1) if tensor is not None else None
-
-        def apply_mask_to_dict(d, i):
-            return (
-                {k: v[:, i][mask[:, i]].unsqueeze(1) for k, v in d.items()} if d else {}
-            )
-
-        filtered_trajectories = []
-        for i in range(mask.shape[1]):
-            if not mask[:, i].any():
-                continue
-
-            actions = apply_mask(self.actions, i)
-            intervene_flags = apply_mask(self.intervene_flags, i)
-            transition_valids = apply_mask(self.transition_valids, i)
-            rewards = apply_mask(self.rewards, i)
-            prev_logprobs = apply_mask(self.prev_logprobs, i)
-            prev_values = apply_mask(self.prev_values, i)
-            versions = apply_mask(self.versions, i)
-
-            forward_inputs = apply_mask_to_dict(self.forward_inputs, i)
-            curr_obs = apply_mask_to_dict(self.curr_obs, i)
-            next_obs = apply_mask_to_dict(self.next_obs, i)
-
-            terminations = truncations = dones = None
-            if self.terminations is not None:
-                field_mask = self._generate_field_mask(
-                    self.terminations[:, i : i + 1], mask[:, i], traj_len
-                )
-                terminations = self.terminations[:, i : i + 1][field_mask]
-                truncations = self.truncations[:, i : i + 1][field_mask]
-                dones = self.dones[:, i : i + 1][field_mask]
-
-            filtered_trajectories.append(
-                Trajectory(
-                    max_episode_length=self.max_episode_length,
-                    model_weights_id=self.model_weights_id,
-                    actions=actions,
-                    intervene_flags=intervene_flags,
-                    transition_valids=transition_valids,
-                    rewards=rewards,
-                    terminations=terminations,
-                    truncations=truncations,
-                    dones=dones,
-                    prev_logprobs=prev_logprobs,
-                    prev_values=prev_values,
-                    versions=versions,
-                    forward_inputs=forward_inputs,
-                    curr_obs=curr_obs,
-                    next_obs=next_obs,
-                )
-            )
-
-        return filtered_trajectories if filtered_trajectories else None
+        return self._extract_action_level_trajs(mask)
 
 
 @dataclass(kw_only=True)
@@ -712,9 +941,14 @@ class EmbodiedRolloutResult:
                 torch.stack(self.intervene_flags, dim=0).cpu().contiguous()
             )
         if len(self.transition_valids) > 0:
-            trajectory.transition_valids = (
-                torch.stack(self.transition_valids, dim=0).cpu().contiguous()
-            )
+            trajectory.transition_valids = torch.stack(
+                self.transition_valids, dim=0
+            ).cpu().contiguous()
+            if (
+                trajectory.transition_valids.dim() == 3
+                and trajectory.transition_valids.shape[-1] == 1
+            ):
+                trajectory.transition_valids = trajectory.transition_valids.squeeze(-1)
         if len(self.rewards) > 0:
             trajectory.rewards = torch.stack(self.rewards, dim=0).cpu().contiguous()
         if len(self.terminations) > 0:

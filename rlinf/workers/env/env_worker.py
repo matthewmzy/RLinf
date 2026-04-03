@@ -79,6 +79,22 @@ class EnvWorker(Worker):
             // self.cfg.actor.model.num_action_chunks
         )
         self.actor_split_num = self.get_actor_split_num()
+        self.stop_rollout_on_episode_end = self._resolve_stop_rollout_on_episode_end()
+
+    def _resolve_stop_rollout_on_episode_end(self) -> bool:
+        configured = self.cfg.env.train.get("stop_rollout_on_episode_end", None)
+        if configured is not None:
+            return bool(configured) and self.stage_num == 1
+        return self.cfg.env.train.env_type == "realworld" and self.stage_num == 1
+
+    def _should_stop_rollout_after_step(
+        self, env_output: EnvOutput, chunk_step_idx: int
+    ) -> bool:
+        if chunk_step_idx == self.n_train_chunk_steps - 1:
+            return True
+        if not self.stop_rollout_on_episode_end:
+            return False
+        return bool(env_output.dones is not None and env_output.dones.any())
 
     def init_worker(self):
         self.dst_ranks = {
@@ -686,10 +702,12 @@ class EnvWorker(Worker):
                     {
                         "obs": env_batch["obs"],
                         "final_obs": env_batch["final_obs"],
+                        "rollout_stop": False,
                     },
                 )
 
-            for _ in range(self.n_train_chunk_steps):
+            should_stop_epoch = False
+            for chunk_step_idx in range(self.n_train_chunk_steps):
                 for stage_id in range(self.stage_num):
                     if cooperative_yield:
                         await asyncio.sleep(0)
@@ -733,11 +751,15 @@ class EnvWorker(Worker):
                         rollout_result.actions, stage_id
                     )
                     env_batch = env_output.to_dict()
+                    rollout_stop = self._should_stop_rollout_after_step(
+                        env_output, chunk_step_idx
+                    )
                     self.send_env_batch(
                         output_channel,
                         {
                             "obs": env_batch["obs"],
                             "final_obs": env_batch["final_obs"],
+                            "rollout_stop": rollout_stop,
                         },
                     )
                     if self.collect_transitions:
@@ -754,6 +776,10 @@ class EnvWorker(Worker):
 
                     env_outputs[stage_id] = env_output
                     self.record_env_metrics(env_metrics, env_info, epoch)
+                    should_stop_epoch = should_stop_epoch or rollout_stop
+
+                if should_stop_epoch:
+                    break
 
             for stage_id in range(self.stage_num):
                 env_output = env_outputs[stage_id]

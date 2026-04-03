@@ -350,11 +350,22 @@ class MultiStepRolloutWorker(Worker):
     @Worker.timer("generate_one_epoch")
     async def generate_one_epoch(self, input_channel: Channel, output_channel: Channel):
         self.update_dagger_beta()
-        for _ in range(self.n_train_chunk_steps):
-            for _ in range(self.num_pipeline_stages):
-                env_output = await self.recv_env_output(input_channel)
-                actions, result = self.predict(env_output["obs"])
+        finished_stages = 0
+        while finished_stages < self.num_pipeline_stages:
+            env_output = await self.recv_env_output(input_channel)
+            actions, result = self.predict(env_output["obs"])
 
+            if env_output.get("rollout_stop", False):
+                rollout_result = RolloutResult(
+                    prev_values=result["prev_values"]
+                    if self.collect_prev_infos
+                    else None,
+                    bootstrap_values=self.get_bootstrap_values(
+                        env_output.get("final_obs", None)
+                    ),
+                )
+                finished_stages += 1
+            else:
                 save_flags = None
                 if result.get("expert_label_flag", False):
                     save_flags = torch.full(
@@ -376,24 +387,13 @@ class MultiStepRolloutWorker(Worker):
                     ),
                     save_flags=save_flags,
                     forward_inputs=result["forward_inputs"],
-                    versions=torch.full_like(
-                        result["prev_logprobs"],
+                    versions=torch.full(
+                        (actions.shape[0], 1),
                         float(self.version),
                         dtype=torch.float32,
+                        device=actions.device,
                     ),
                 )
-                self.send_rollout_result(output_channel, rollout_result, mode="train")
-        for _ in range(self.num_pipeline_stages):
-            env_output = await self.recv_env_output(input_channel)
-            actions, result = self.predict(env_output["obs"])
-
-            rollout_result = RolloutResult(
-                actions=actions,
-                prev_values=result["prev_values"] if self.collect_prev_infos else None,
-                bootstrap_values=self.get_bootstrap_values(
-                    env_output.get("final_obs", None)
-                ),
-            )
             self.send_rollout_result(output_channel, rollout_result, mode="train")
 
     async def generate(
@@ -543,7 +543,16 @@ class MultiStepRolloutWorker(Worker):
             ]
             merged_final_obs = _merge_obs_dicts(final_obs_or_obs)
 
-        return {"obs": merged_obs, "final_obs": merged_final_obs}
+        rollout_stop_values = [bool(obs_batch.get("rollout_stop", False)) for obs_batch in obs_batches]
+        assert all(value == rollout_stop_values[0] for value in rollout_stop_values), (
+            f"Inconsistent rollout_stop flags across merged env batches: {rollout_stop_values}"
+        )
+
+        return {
+            "obs": merged_obs,
+            "final_obs": merged_final_obs,
+            "rollout_stop": rollout_stop_values[0],
+        }
 
     def send_chunk_actions(
         self,

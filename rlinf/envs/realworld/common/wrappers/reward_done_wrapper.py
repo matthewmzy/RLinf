@@ -36,10 +36,16 @@ class BaseKeyboardRewardDoneWrapper(gym.Wrapper):
     ) -> tuple[ObsType, SupportsFloat, bool, bool, dict[str, Any]]:
         """Modifies the :attr:`env` :meth:`step` reward using :meth:`self.reward`."""
         observation, reward, terminated, truncated, info = self.env.step(action)
-        last_intervened, updated_reward, updated_terminated = self.reward_terminated()
+        last_intervened, updated_reward, keyboard_terminated = self.reward_terminated()
         info = dict(info)
-        info["success"] = bool(updated_terminated and updated_reward > 0)
-        info["fail"] = bool(updated_terminated and updated_reward < 0)
+        updated_terminated = bool(terminated or keyboard_terminated)
+        info["success"] = bool(
+            info.get("success", False)
+            or (keyboard_terminated and updated_reward > 0)
+        )
+        info["fail"] = bool(
+            info.get("fail", False) or (keyboard_terminated and updated_reward < 0)
+        )
         if last_intervened or self.reward_mode == "always_replace":
             reward = updated_reward
         return observation, reward, updated_terminated, truncated, info

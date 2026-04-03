@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import threading
+from collections import deque
 
 
 class KeyboardListener:
@@ -20,7 +21,8 @@ class KeyboardListener:
         from pynput import keyboard
 
         self.state_lock = threading.Lock()
-        self.latest_data = {"key": None}
+        self._pressed_keys = set()
+        self._pending_keys = deque()
 
         self.listener = keyboard.Listener(
             on_press=self.on_key_press, on_release=self.on_key_release
@@ -28,15 +30,27 @@ class KeyboardListener:
         self.listener.start()
         self.last_intervene = 0
 
+    def _normalize_key(self, key) -> str:
+        if hasattr(key, "char") and key.char is not None:
+            return key.char.lower()
+        return str(key)
+
     def on_key_press(self, key):
+        normalized_key = self._normalize_key(key)
         with self.state_lock:
-            self.latest_data["key"] = key.char if hasattr(key, "char") else str(key)
+            if normalized_key in self._pressed_keys:
+                return
+            self._pressed_keys.add(normalized_key)
+            self._pending_keys.append(normalized_key)
 
     def on_key_release(self, key):
+        normalized_key = self._normalize_key(key)
         with self.state_lock:
-            self.latest_data["key"] = None
+            self._pressed_keys.discard(normalized_key)
 
     def get_key(self) -> str | None:
-        """Returns the latest key pressed."""
+        """Returns the next queued key press event."""
         with self.state_lock:
-            return self.latest_data["key"]
+            if not self._pending_keys:
+                return None
+            return self._pending_keys.popleft()

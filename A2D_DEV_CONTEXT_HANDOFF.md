@@ -209,9 +209,9 @@ gRPC 观测对象里有三类信息：
 
 当前真机配置走键盘 sparse reward：
 
-- `a = fail, reward -1, done=True`
-- `b = neutral, reward 0`
-- `c = success, reward +1, done=True`
+- `f = fail, reward -1, done=True`
+- `s = success, reward +1, done=True`
+- 成功/失败是整条 episode 的终局标签，不是某一帧的瞬时状态
 
 ## 文档与产物
 

@@ -126,7 +126,7 @@ env:
       auto_start_server: False
       task_name: "A2D psi-policy SAC fine-tuning"
       step_frequency: 10.0
-      max_num_steps: 100
+      max_num_steps: 96
       reset_on_env_reset: True
       policy_action_dim: 26
       normalize_actions: False
@@ -165,6 +165,8 @@ env:
           1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
           1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         ]
+    max_steps_per_rollout_epoch: 96  # chunk-aligned for 8-step psi-policy execution
+    max_episode_steps: 96
 
   eval:
     total_num_envs: 1
@@ -173,7 +175,7 @@ env:
       is_dummy: False
       task_name: "A2D psi-policy SAC evaluation"
       step_frequency: 10.0
-      max_num_steps: 100
+      max_num_steps: 96
       reset_on_env_reset: True
       policy_action_dim: 26
       normalize_actions: False
@@ -212,6 +214,8 @@ env:
           1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
           1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         ]
+    max_steps_per_rollout_epoch: 96  # chunk-aligned for 8-step psi-policy execution
+    max_episode_steps: 96
 
 rollout:
   group_name: "RolloutGroup"
@@ -243,6 +247,7 @@ actor:
     model_path: "/path/to/psi-policy-checkpoint"
     normalizer_path: "/path/to/normalizer.pkl"
     action_dim: 26
+    num_action_chunks: 8  # match psi-policy client execute_step
     num_q_heads: 2
     # Examples:
     # 1) learn all dims: keep rl_action_mask.enabled = False

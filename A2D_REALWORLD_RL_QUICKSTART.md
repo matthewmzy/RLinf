@@ -179,9 +179,9 @@ cluster:
 - `1` 是遥操作接管帧，会作为 intervention 样本进入数据流
 - `99` 是空闲帧，不会进入 replay buffer
 - 键盘奖励模式是：
-  - `a`：失败，reward = -1，done = True
-  - `b`：中性，reward = 0
-  - `c`：成功，reward = +1，done = True
+  - `f`：失败，reward = -1，当前 episode 立刻 done
+  - `s`：成功，reward = +1，当前 episode 立刻 done
+  - 成功/失败是整条 episode 的标签，不是“按住这个键的那几帧才算成功/失败”
 - 训练刚开始时先用 replay-only 训练 critic
 - 至少积累约 20 条轨迹后 actor 才开始更新
 - 一旦出现第一批人工接管轨迹，demo buffer 会自动开始参与混采

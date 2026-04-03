@@ -51,6 +51,13 @@ class A2DRobotConfig:
     task_name: str = "A2D teleoperation"
     policy_action_dim: int = 28
     waist_action: Optional[list[float]] = None
+    reset_controller_action: Optional[list[float]] = None
+    reset_pose_dataset_path: Optional[str] = None
+    reset_pose_episode_idx: int = 0
+    reset_pose_frame_index: Optional[int] = None
+    reset_pose_frame_number: Optional[int] = None
+    reset_move_timeout_s: float = 12.0
+    reset_tolerance: float = 0.03
 
     # RLinf policies usually act in [-1, 1]; map that range into controller action values.
     normalize_actions: bool = True
@@ -113,6 +120,17 @@ class A2DRobotConfig:
             self.waist_action = np.asarray(
                 self.waist_action, dtype=np.float32
             ).tolist()
+        if self.reset_controller_action is not None:
+            self.reset_controller_action = np.asarray(
+                self.reset_controller_action, dtype=np.float32
+            ).tolist()
+        self.reset_pose_episode_idx = int(self.reset_pose_episode_idx)
+        if self.reset_pose_frame_index is not None:
+            self.reset_pose_frame_index = int(self.reset_pose_frame_index)
+        if self.reset_pose_frame_number is not None:
+            self.reset_pose_frame_number = int(self.reset_pose_frame_number)
+        self.reset_move_timeout_s = float(self.reset_move_timeout_s)
+        self.reset_tolerance = float(self.reset_tolerance)
         self.action_low = np.asarray(self.action_low, dtype=np.float32).tolist()
         self.action_high = np.asarray(self.action_high, dtype=np.float32).tolist()
         self.model_control_modes = [int(value) for value in self.model_control_modes]
@@ -138,6 +156,12 @@ class A2DRobotConfig:
             raise ValueError(
                 "waist_action must contain exactly 2 values when policy_action_dim is 26."
             )
+        if self.reset_controller_action is not None and len(self.reset_controller_action) != 28:
+            raise ValueError(
+                "reset_controller_action must contain exactly 28 controller joint values."
+            )
+        if self.reset_pose_frame_number is not None and self.reset_pose_frame_number <= 0:
+            raise ValueError("reset_pose_frame_number must be 1-based and > 0.")
         self.image_shapes = {
             key: list(value) for key, value in dict(self.image_shapes).items()
         }
@@ -157,6 +181,8 @@ class A2DEnv(gym.Env):
         self.env_idx = env_idx
         self.node_rank = 0
         self.env_worker_rank = 0
+        self._configured_reset_controller_action = self._resolve_reset_controller_action()
+        self._episode_reset_controller_action: Optional[np.ndarray] = None
         if worker_info is not None:
             self.node_rank = worker_info.cluster_node_rank
             self.env_worker_rank = worker_info.rank
@@ -166,9 +192,61 @@ class A2DEnv(gym.Env):
 
         if not self.config.is_dummy:
             self._setup_hardware()
-            self._robot_state = self._controller.reset().wait()[0]
+            self._robot_state = self._reset_robot()
 
         self._init_action_obs_spaces()
+
+    def _resolve_reset_controller_action(self) -> Optional[np.ndarray]:
+        if self.config.reset_controller_action is not None:
+            return np.asarray(self.config.reset_controller_action, dtype=np.float32)
+        if not self.config.reset_pose_dataset_path:
+            return None
+
+        import zarr
+
+        root = zarr.open(self.config.reset_pose_dataset_path, mode="r")
+        episode_ends = np.asarray(root["meta"]["episode_ends"], dtype=np.int64)
+        episode_idx = self.config.reset_pose_episode_idx
+        if not 0 <= episode_idx < len(episode_ends):
+            raise IndexError(
+                f"reset_pose_episode_idx {episode_idx} is out of range for "
+                f"{len(episode_ends)} episodes."
+            )
+        episode_start = 0 if episode_idx == 0 else int(episode_ends[episode_idx - 1])
+        episode_end = int(episode_ends[episode_idx])
+        episode_len = episode_end - episode_start
+
+        if self.config.reset_pose_frame_number is not None:
+            frame_offset = self.config.reset_pose_frame_number - 1
+        elif self.config.reset_pose_frame_index is not None:
+            frame_offset = self.config.reset_pose_frame_index
+        else:
+            frame_offset = 0
+        if not 0 <= frame_offset < episode_len:
+            raise IndexError(
+                f"Reset frame offset {frame_offset} is out of range for episode "
+                f"{episode_idx} with length {episode_len}."
+            )
+        frame_idx = episode_start + frame_offset
+        data = root["data"]
+        reset_action = np.concatenate(
+            [
+                np.asarray(data["waist_joints_states"][frame_idx], dtype=np.float32),
+                np.asarray(data["left_arm_states"][frame_idx], dtype=np.float32),
+                np.asarray(data["right_arm_states"][frame_idx], dtype=np.float32),
+                np.asarray(data["left_hand_states"][frame_idx], dtype=np.float32),
+                np.asarray(data["right_hand_states"][frame_idx], dtype=np.float32),
+            ],
+            axis=0,
+        ).astype(np.float32)
+        self._logger.info(
+            "Loaded A2D reset pose from %s episode=%s frame_offset=%s frame_idx=%s",
+            self.config.reset_pose_dataset_path,
+            episode_idx,
+            frame_offset,
+            frame_idx,
+        )
+        return reset_action
 
     def _setup_hardware(self) -> None:
         from .a2d_controller import A2DController
@@ -202,6 +280,43 @@ class A2DEnv(gym.Env):
             auto_start_server=self.config.auto_start_server,
             server_command=self.config.server_command,
         )
+
+    def _get_active_reset_controller_action(self) -> Optional[np.ndarray]:
+        if self._episode_reset_controller_action is not None:
+            return self._episode_reset_controller_action
+        if self._configured_reset_controller_action is not None:
+            return self._configured_reset_controller_action
+        return None
+
+    def _reset_robot(self, seed: Optional[int] = None) -> A2DRobotState:
+        robot_state = self._controller.reset(seed=seed).wait()[0]
+        target_action = self._configured_reset_controller_action
+        if target_action is None:
+            self._episode_reset_controller_action = self._get_controller_state_action(
+                robot_state
+            ).astype(np.float32)
+            return robot_state
+
+        deadline = time.time() + self.config.reset_move_timeout_s
+        step_interval_s = max(1.0 / self.config.step_frequency, 0.05)
+        while True:
+            current_action = self._get_controller_state_action(robot_state)
+            max_error = float(np.abs(current_action - target_action).max())
+            if max_error <= self.config.reset_tolerance:
+                break
+            if time.time() >= deadline:
+                self._logger.warning(
+                    "Timed out moving A2D to reset pose after %.2fs (max joint error %.5f).",
+                    self.config.reset_move_timeout_s,
+                    max_error,
+                )
+                break
+            self._controller.set_action(target_action).wait()
+            time.sleep(step_interval_s)
+            robot_state = self._controller.get_state().wait()[0]
+
+        self._episode_reset_controller_action = target_action.astype(np.float32).copy()
+        return robot_state
 
     def _init_action_obs_spaces(self) -> None:
         action_low = np.full((self.config.policy_action_dim,), -1.0, dtype=np.float32)
@@ -276,6 +391,9 @@ class A2DEnv(gym.Env):
     def _get_waist_action(self) -> np.ndarray:
         if self.config.waist_action is not None:
             return np.asarray(self.config.waist_action, dtype=np.float32).reshape(-1)
+        reset_action = self._get_active_reset_controller_action()
+        if reset_action is not None:
+            return reset_action[:2].astype(np.float32).copy()
         waist_state = self._robot_state.states.get("waist_joints_states")
         if waist_state is not None:
             waist_action = np.asarray(waist_state, dtype=np.float32).reshape(-1)
@@ -456,9 +574,12 @@ class A2DEnv(gym.Env):
             return self._base_observation_space.sample(), {}
 
         if self.config.reset_on_env_reset:
-            self._robot_state = self._controller.reset(seed=seed).wait()[0]
+            self._robot_state = self._reset_robot(seed=seed)
         else:
             self._robot_state = self._controller.get_state().wait()[0]
+            self._episode_reset_controller_action = self._get_controller_state_action(
+                self._robot_state
+            ).astype(np.float32)
         observation = self._extract_observation(self._robot_state)
         return observation, self._build_info(self._robot_state)
 

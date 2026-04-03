@@ -270,12 +270,17 @@ class RealWorldEnv(gym.Env):
 
         self._elapsed_steps += 1
         raw_obs, _reward, terminations, truncations, infos = self.env.step(actions)
-        truncations = self.elapsed_steps >= self.cfg.max_episode_steps
+        terminations = np.asarray(terminations, dtype=bool).copy()
+        env_truncations = np.asarray(truncations, dtype=bool).copy()
+        max_step_truncations = self.elapsed_steps >= self.cfg.max_episode_steps
+        truncations = env_truncations | max_step_truncations
 
         obs = self._wrap_obs(raw_obs)
         step_reward = self._calc_step_reward(_reward).copy()
         success_flags = np.asarray(infos.get("success", terminations), dtype=bool).copy()
-        timeout_fail = np.asarray(truncations & ~terminations, dtype=bool).copy()
+        timeout_fail = np.asarray(
+            max_step_truncations & ~terminations, dtype=bool
+        ).copy()
         fail_flags = np.asarray(
             infos.get("fail", np.zeros(self.num_envs, dtype=bool)),
             dtype=bool,
@@ -315,7 +320,19 @@ class RealWorldEnv(gym.Env):
         dones = terminations | truncations
         _auto_reset = auto_reset and self.auto_reset
         if dones.any() and _auto_reset:
+            final_step_infos = infos
             obs, infos = self._handle_auto_reset(dones, obs, infos)
+            for key in (
+                "episode",
+                "intervene_action",
+                "intervene_flag",
+                "data_valid",
+                "success",
+                "fail",
+                "timeout_fail",
+            ):
+                if key in final_step_infos:
+                    infos[key] = final_step_infos[key]
         return (
             obs,
             to_tensor(step_reward),
@@ -355,6 +372,41 @@ class RealWorldEnv(gym.Env):
             raw_chunk_terminations.append(terminations)
             raw_chunk_truncations.append(truncations)
 
+            if torch.logical_or(terminations, truncations).any():
+                break
+
+        if not chunk_rewards:
+            raise RuntimeError("chunk_step received an empty action chunk.")
+
+        pad_steps = chunk_size - len(chunk_rewards)
+        if pad_steps > 0:
+            zero_reward = torch.zeros_like(chunk_rewards[0])
+            zero_termination = torch.zeros_like(raw_chunk_terminations[0])
+            zero_truncation = torch.zeros_like(raw_chunk_truncations[0])
+            chunk_rewards.extend(zero_reward.clone() for _ in range(pad_steps))
+            raw_chunk_terminations.extend(
+                zero_termination.clone() for _ in range(pad_steps)
+            )
+            raw_chunk_truncations.extend(
+                zero_truncation.clone() for _ in range(pad_steps)
+            )
+
+            if raw_chunk_intervene_actions:
+                zero_intervene_action = torch.zeros_like(raw_chunk_intervene_actions[0])
+                zero_intervene_flag = torch.zeros_like(raw_chunk_intervene_flag[0])
+                raw_chunk_intervene_actions.extend(
+                    zero_intervene_action.clone() for _ in range(pad_steps)
+                )
+                raw_chunk_intervene_flag.extend(
+                    zero_intervene_flag.clone() for _ in range(pad_steps)
+                )
+
+            if raw_chunk_data_valid:
+                invalid_data = torch.zeros_like(raw_chunk_data_valid[0], dtype=torch.bool)
+                raw_chunk_data_valid.extend(
+                    invalid_data.clone() for _ in range(pad_steps)
+                )
+
         chunk_rewards = torch.stack(chunk_rewards, dim=1)  # [num_envs, chunk_steps]
         raw_chunk_terminations = torch.stack(
             raw_chunk_terminations, dim=1
@@ -367,7 +419,7 @@ class RealWorldEnv(gym.Env):
         past_truncations = raw_chunk_truncations.any(dim=1)
         past_dones = torch.logical_or(past_terminations, past_truncations)
 
-        infos_last = infos_list[-1] if infos_list else {}
+        infos_last = dict(infos_list[-1]) if infos_list else {}
         if raw_chunk_intervene_actions:
             infos_last["intervene_action"] = torch.stack(
                 raw_chunk_intervene_actions, dim=1
@@ -375,12 +427,16 @@ class RealWorldEnv(gym.Env):
             infos_last["intervene_flag"] = torch.stack(raw_chunk_intervene_flag, dim=1)
         if raw_chunk_data_valid:
             infos_last["data_valid"] = torch.stack(raw_chunk_data_valid, dim=1)
-            infos_list[-1] = infos_last
+        infos_list[-1] = infos_last
 
         if past_dones.any() and self.auto_reset:
-            obs_list[-1], infos_list[-1] = self._handle_auto_reset(
+            reset_obs, reset_infos = self._handle_auto_reset(
                 past_dones.cpu().numpy(), obs_list[-1], infos_list[-1]
             )
+            for key in ("intervene_action", "intervene_flag", "data_valid"):
+                if key in infos_last:
+                    reset_infos[key] = infos_last[key]
+            obs_list[-1], infos_list[-1] = reset_obs, reset_infos
 
         if self.auto_reset or self.ignore_terminations:
             chunk_terminations = torch.zeros_like(raw_chunk_terminations)
