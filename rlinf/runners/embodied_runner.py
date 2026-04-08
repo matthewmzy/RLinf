@@ -23,6 +23,7 @@ from omegaconf.dictconfig import DictConfig
 
 from rlinf.scheduler import Channel
 from rlinf.scheduler import WorkerGroupFuncResult as Handle
+from rlinf.utils.dashboard_telemetry import DashboardTelemetry
 from rlinf.utils.distributed import ScopedTimer
 from rlinf.utils.logging import get_logger
 from rlinf.utils.metric_logger import MetricLogger
@@ -85,6 +86,9 @@ class EmbodiedRunner:
         self.enable_per_worker_metric_log = bool(
             self.cfg.runner.get("per_worker_log", False)
         )
+        self.dashboard_telemetry = DashboardTelemetry()
+        self._last_control_request_id = None
+        self._active_stop_request = None
 
         # Async logging setup
         self.stop_logging = False
@@ -94,7 +98,7 @@ class EmbodiedRunner:
 
     def _log_worker(self):
         """Background thread for processing log messages."""
-        while not self.stop_logging:
+        while not self.stop_logging or not self.log_queue.empty():
             try:
                 # Wait for log message with timeout
                 log_func, args = self.log_queue.get(timeout=0.1)
@@ -119,7 +123,57 @@ class EmbodiedRunner:
             (print_metrics_table, (step, total_steps, start_time, metrics, start_step))
         )
 
+    def _write_dashboard_state(self, status: str, phase: str, **extra):
+        if not self.dashboard_telemetry.enabled:
+            return
+        self.dashboard_telemetry.write_runner_state(
+            status=status,
+            phase=phase,
+            global_step=self.global_step,
+            max_steps=self.max_steps,
+            experiment_name=self.cfg.runner.logger.experiment_name,
+            log_path=self.cfg.runner.logger.log_path,
+            **extra,
+        )
+
+    def _poll_stop_request(self):
+        control = self.dashboard_telemetry.read_control()
+        if not control or not control.get("stop_requested", False):
+            return None
+
+        request_id = control.get("request_id", "default")
+        if request_id == self._last_control_request_id:
+            return self._active_stop_request
+
+        self._last_control_request_id = request_id
+        self._active_stop_request = control
+        self.dashboard_telemetry.append_runner_event(
+            "stop_requested",
+            request_id=request_id,
+            save_buffers=bool(control.get("save_buffers", False)),
+            flush_buffers=bool(control.get("flush_buffers", True)),
+        )
+        return control
+
+    def _flush_runtime_buffers(self):
+        self._write_dashboard_state(
+            status="stopping",
+            phase="flushing_buffers",
+            note="Flushing replay/demo buffers before shutdown.",
+        )
+        return self.actor.flush_runtime_buffers().wait()
+
+    def _shutdown_logging_thread(self):
+        self.stop_logging = True
+        self.log_queue.join()
+        self.log_thread.join(timeout=1.0)
+
     def init_workers(self):
+        self._write_dashboard_state(
+            status="initializing",
+            phase="init_workers",
+            note="Initializing actor, rollout and env workers.",
+        )
         # create worker in order to decrease the maximum memory usage
         self.actor.init_worker().wait()
         self.rollout.init_worker().wait()
@@ -127,6 +181,11 @@ class EmbodiedRunner:
 
         resume_dir = self.cfg.runner.get("resume_dir", None)
         if resume_dir is None:
+            self._write_dashboard_state(
+                status="ready",
+                phase="idle",
+                note="Workers initialized and ready to train.",
+            )
             return
 
         self.logger.info(f"Resuming training from checkpoint directory {resume_dir}.")
@@ -136,6 +195,11 @@ class EmbodiedRunner:
         )
         self.actor.load_checkpoint(actor_checkpoint_path).wait()
         self.global_step = int(resume_dir.split("global_step_")[-1])
+        self._write_dashboard_state(
+            status="ready",
+            phase="idle",
+            note=f"Resumed from {resume_dir}.",
+        )
 
     def update_rollout_weights(self):
         rollout_handle: Handle = self.rollout.sync_model_from_actor()
@@ -251,170 +315,324 @@ class EmbodiedRunner:
     def run(self):
         start_step = self.global_step
         start_time = time.time()
-        for _step in range(start_step, self.max_steps):
-            # set global step
-            self.actor.set_global_step(self.global_step)
-            self.rollout.set_global_step(self.global_step)
-
-            with self.timer("step"):
-                with self.timer("sync_weights"):
-                    if _step % self.weight_sync_interval == 0:
-                        self.update_rollout_weights()
-                with self.timer("generate_rollouts"):
-                    env_handle: Handle = self.env.interact(
-                        input_channel=self.rollout_channel,
-                        output_channel=self.env_channel,
-                        actor_channel=self.actor_channel,
+        stop_request = None
+        last_logging_metrics = {}
+        final_status = "completed"
+        self._write_dashboard_state(
+            status="running",
+            phase="startup",
+            started_at=start_time,
+            note="Training loop started.",
+        )
+        try:
+            for _step in range(start_step, self.max_steps):
+                stop_request = self._poll_stop_request()
+                if stop_request is not None:
+                    final_status = "stopped"
+                    self._write_dashboard_state(
+                        status="stopping",
+                        phase="awaiting_safe_stop",
+                        started_at=start_time,
+                        stop_requested=True,
+                        note="Stop requested. Waiting for a safe loop boundary.",
                     )
-                    rollout_handle: Handle = self.rollout.generate(
-                        input_channel=self.env_channel,
-                        output_channel=self.rollout_channel,
+                    break
+
+                # set global step
+                self.actor.set_global_step(self.global_step)
+                self.rollout.set_global_step(self.global_step)
+
+                with self.timer("step"):
+                    with self.timer("sync_weights"):
+                        self._write_dashboard_state(
+                            status="running",
+                            phase="sync_weights",
+                            started_at=start_time,
+                        )
+                        if _step % self.weight_sync_interval == 0:
+                            self.update_rollout_weights()
+                    with self.timer("generate_rollouts"):
+                        self._write_dashboard_state(
+                            status="running",
+                            phase="generate_rollouts",
+                            started_at=start_time,
+                        )
+                        env_handle: Handle = self.env.interact(
+                            input_channel=self.rollout_channel,
+                            output_channel=self.env_channel,
+                            actor_channel=self.actor_channel,
+                        )
+                        rollout_handle: Handle = self.rollout.generate(
+                            input_channel=self.env_channel,
+                            output_channel=self.rollout_channel,
+                        )
+                        self.actor.recv_rollout_trajectories(
+                            input_channel=self.actor_channel
+                        ).wait()
+                        rollout_handle.wait()
+
+                    with self.timer("cal_adv_and_returns"):
+                        self._write_dashboard_state(
+                            status="running",
+                            phase="compute_returns",
+                            started_at=start_time,
+                        )
+                        actor_rollout_metrics = (
+                            self.actor.compute_advantages_and_returns().wait()
+                        )
+
+                    self._write_dashboard_state(
+                        status="running",
+                        phase="train_actor_critic",
+                        started_at=start_time,
                     )
-                    self.actor.recv_rollout_trajectories(
-                        input_channel=self.actor_channel
-                    ).wait()
-                    rollout_handle.wait()
+                    actor_training_handle: Handle = self.actor.run_training()
+                    actor_training_metrics = actor_training_handle.wait()
 
-                # compute advantages and returns.
-                with self.timer("cal_adv_and_returns"):
-                    actor_rollout_metrics = (
-                        self.actor.compute_advantages_and_returns().wait()
+                    self.global_step += 1
+
+                    run_val, save_model, is_train_end = check_progress(
+                        self.global_step,
+                        self.max_steps,
+                        self.cfg.runner.val_check_interval,
+                        self.cfg.runner.save_interval,
+                        1.0,
+                        run_time_exceeded=False,
                     )
+                    del is_train_end
 
-                # actor training.
-                actor_training_handle: Handle = self.actor.run_training()
+                    eval_metrics = {}
+                    if run_val:
+                        with self.timer("eval"):
+                            self._write_dashboard_state(
+                                status="running",
+                                phase="evaluate",
+                                started_at=start_time,
+                            )
+                            self.update_rollout_weights()
+                            eval_metrics = self.evaluate()
+                            eval_metrics = {
+                                f"eval/{k}": v for k, v in eval_metrics.items()
+                            }
+                            self.metric_logger.log(data=eval_metrics, step=_step)
 
-                actor_training_metrics = actor_training_handle.wait()
+                    if save_model:
+                        self._write_dashboard_state(
+                            status="running",
+                            phase="save_checkpoint",
+                            started_at=start_time,
+                        )
+                        self._save_checkpoint()
 
-                self.global_step += 1
-
-                run_val, save_model, is_train_end = check_progress(
-                    self.global_step,
-                    self.max_steps,
-                    self.cfg.runner.val_check_interval,
-                    self.cfg.runner.save_interval,
-                    1.0,
-                    run_time_exceeded=False,
+                time_metrics = self.timer.consume_durations()
+                time_metrics = {f"time/{k}": v for k, v in time_metrics.items()}
+                env_time_metrics, env_time_metrics_per_rank = (
+                    env_handle.consume_durations(return_per_rank=True)
+                )
+                rollout_time_metrics, rollout_time_metrics_per_rank = (
+                    rollout_handle.consume_durations(return_per_rank=True)
+                )
+                actor_time_metrics, actor_time_metrics_per_rank = (
+                    actor_training_handle.consume_durations(return_per_rank=True)
+                )
+                time_metrics.update(
+                    {f"time/env/{k}": v for k, v in env_time_metrics.items()}
+                )
+                time_metrics.update(
+                    {f"time/rollout/{k}": v for k, v in rollout_time_metrics.items()}
+                )
+                time_metrics.update(
+                    {f"time/actor/{k}": v for k, v in actor_time_metrics.items()}
                 )
 
-                eval_metrics = {}
-                if run_val:
-                    with self.timer("eval"):
-                        self.update_rollout_weights()
-                        eval_metrics = self.evaluate()
-                        eval_metrics = {f"eval/{k}": v for k, v in eval_metrics.items()}
-                        self.metric_logger.log(data=eval_metrics, step=_step)
+                env_results = env_handle.wait()
+                env_results_list = [
+                    results for results in env_results if results is not None
+                ]
+                env_metrics = compute_evaluate_metrics(env_results_list)
+                env_metrics = {f"env/{k}": v for k, v in env_metrics.items()}
+                ranked_env_results = [
+                    {"rank": rank, "env": rank_metrics}
+                    for rank, rank_metrics in enumerate(env_results)
+                    if rank_metrics is not None
+                ]
+                _, env_metrics_per_rank = self._process_ranked_eval_results(
+                    ranked_env_results, metric_field="env"
+                )
 
-                if save_model:
-                    self._save_checkpoint()
+                rollout_metrics = {
+                    f"rollout/{k}": v
+                    for k, v in self._aggregate_numeric_metrics(
+                        actor_rollout_metrics
+                    ).items()
+                }
 
-            time_metrics = self.timer.consume_durations()
-            time_metrics = {f"time/{k}": v for k, v in time_metrics.items()}
-            env_time_metrics, env_time_metrics_per_rank = env_handle.consume_durations(
-                return_per_rank=True
-            )
-            rollout_time_metrics, rollout_time_metrics_per_rank = (
-                rollout_handle.consume_durations(return_per_rank=True)
-            )
-            actor_time_metrics, actor_time_metrics_per_rank = (
-                actor_training_handle.consume_durations(return_per_rank=True)
-            )
-            time_metrics.update(
-                {f"time/env/{k}": v for k, v in env_time_metrics.items()}
-            )
-            time_metrics.update(
-                {f"time/rollout/{k}": v for k, v in rollout_time_metrics.items()}
-            )
-            time_metrics.update(
-                {f"time/actor/{k}": v for k, v in actor_time_metrics.items()}
-            )
+                training_metrics = {
+                    f"train/{k}": v
+                    for k, v in self._aggregate_numeric_metrics(
+                        actor_training_metrics
+                    ).items()
+                }
 
-            env_results = env_handle.wait()
-            env_results_list = [
-                results for results in env_results if results is not None
-            ]
-            env_metrics = compute_evaluate_metrics(env_results_list)
-            env_metrics = {f"env/{k}": v for k, v in env_metrics.items()}
-            ranked_env_results = [
-                {"rank": rank, "env": rank_metrics}
-                for rank, rank_metrics in enumerate(env_results)
-                if rank_metrics is not None
-            ]
-            _, env_metrics_per_rank = self._process_ranked_eval_results(
-                ranked_env_results, metric_field="env"
-            )
+                self.metric_logger.log(env_metrics, _step)
+                self.metric_logger.log(rollout_metrics, _step)
+                self.metric_logger.log(time_metrics, _step)
+                self.metric_logger.log(training_metrics, _step)
+                self._log_ranked_metrics(
+                    metrics_list=actor_rollout_metrics,
+                    step=_step,
+                    prefix="rollout",
+                    worker_group_name=self.actor.worker_group_name,
+                )
+                self._log_ranked_metrics(
+                    metrics_list=actor_training_metrics,
+                    step=_step,
+                    prefix="train",
+                    worker_group_name=self.actor.worker_group_name,
+                )
+                self._log_ranked_metrics(
+                    metrics_list=actor_time_metrics_per_rank,
+                    step=_step,
+                    prefix="time/actor",
+                    worker_group_name=self.actor.worker_group_name,
+                )
+                self._log_ranked_metrics(
+                    metrics_list=rollout_time_metrics_per_rank,
+                    step=_step,
+                    prefix="time/rollout",
+                    worker_group_name=self.rollout.worker_group_name,
+                )
+                self._log_ranked_metrics(
+                    metrics_list=env_time_metrics_per_rank,
+                    step=_step,
+                    prefix="time/env",
+                    worker_group_name=self.env.worker_group_name,
+                )
+                self._log_ranked_metrics(
+                    metrics_list=env_metrics_per_rank,
+                    step=_step,
+                    prefix="env",
+                    worker_group_name=self.env.worker_group_name,
+                )
 
-            rollout_metrics = {
-                f"rollout/{k}": v
-                for k, v in self._aggregate_numeric_metrics(
-                    actor_rollout_metrics
-                ).items()
-            }
+                logging_metrics = dict(time_metrics)
+                logging_metrics.update(eval_metrics)
+                logging_metrics.update(env_metrics)
+                logging_metrics.update(rollout_metrics)
+                logging_metrics.update(training_metrics)
+                last_logging_metrics = logging_metrics
 
-            training_metrics = {
-                f"train/{k}": v
-                for k, v in self._aggregate_numeric_metrics(
-                    actor_training_metrics
-                ).items()
-            }
+                self.dashboard_telemetry.append_runner_metrics(
+                    step=_step,
+                    global_step=self.global_step,
+                    metrics=logging_metrics,
+                )
+                self._write_dashboard_state(
+                    status="running",
+                    phase="idle",
+                    started_at=start_time,
+                    latest_metrics=logging_metrics,
+                )
 
-            self.metric_logger.log(env_metrics, _step)
-            self.metric_logger.log(rollout_metrics, _step)
-            self.metric_logger.log(time_metrics, _step)
-            self.metric_logger.log(training_metrics, _step)
-            self._log_ranked_metrics(
-                metrics_list=actor_rollout_metrics,
-                step=_step,
-                prefix="rollout",
-                worker_group_name=self.actor.worker_group_name,
-            )
-            self._log_ranked_metrics(
-                metrics_list=actor_training_metrics,
-                step=_step,
-                prefix="train",
-                worker_group_name=self.actor.worker_group_name,
-            )
-            self._log_ranked_metrics(
-                metrics_list=actor_time_metrics_per_rank,
-                step=_step,
-                prefix="time/actor",
-                worker_group_name=self.actor.worker_group_name,
-            )
-            self._log_ranked_metrics(
-                metrics_list=rollout_time_metrics_per_rank,
-                step=_step,
-                prefix="time/rollout",
-                worker_group_name=self.rollout.worker_group_name,
-            )
-            self._log_ranked_metrics(
-                metrics_list=env_time_metrics_per_rank,
-                step=_step,
-                prefix="time/env",
-                worker_group_name=self.env.worker_group_name,
-            )
-            self._log_ranked_metrics(
-                metrics_list=env_metrics_per_rank,
-                step=_step,
-                prefix="env",
-                worker_group_name=self.env.worker_group_name,
-            )
+                self.print_metrics_table_async(
+                    _step, self.max_steps, start_time, logging_metrics, start_step
+                )
 
-            logging_metrics = time_metrics
-            logging_metrics.update(eval_metrics)
-            logging_metrics.update(env_metrics)
-            logging_metrics.update(rollout_metrics)
-            logging_metrics.update(training_metrics)
-
-            self.print_metrics_table_async(
-                _step, self.max_steps, start_time, logging_metrics, start_step
+                stop_request = self._poll_stop_request()
+                if stop_request is not None:
+                    final_status = "stopped"
+                    self._write_dashboard_state(
+                        status="stopping",
+                        phase="finishing_step",
+                        started_at=start_time,
+                        stop_requested=True,
+                        latest_metrics=logging_metrics,
+                        note="Stop requested. Current step finished cleanly.",
+                    )
+                    break
+        except KeyboardInterrupt:
+            final_status = "interrupted"
+            self.dashboard_telemetry.append_runner_event(
+                "interrupted", global_step=self.global_step
             )
+            self._write_dashboard_state(
+                status="interrupted",
+                phase="aborted",
+                started_at=start_time,
+                latest_metrics=last_logging_metrics,
+                note="Training interrupted by KeyboardInterrupt.",
+            )
+            raise
+        except Exception as exc:
+            final_status = "failed"
+            self.dashboard_telemetry.append_runner_event(
+                "failed",
+                global_step=self.global_step,
+                error=repr(exc),
+            )
+            self._write_dashboard_state(
+                status="failed",
+                phase="crashed",
+                started_at=start_time,
+                latest_metrics=last_logging_metrics,
+                error=repr(exc),
+            )
+            raise
+        finally:
+            if stop_request is not None and stop_request.get("flush_buffers", True):
+                try:
+                    flush_result = self._flush_runtime_buffers()
+                    self.dashboard_telemetry.append_runner_event(
+                        "buffers_flushed",
+                        global_step=self.global_step,
+                        result=flush_result,
+                    )
+                except Exception as exc:
+                    self.dashboard_telemetry.append_runner_event(
+                        "buffer_flush_failed",
+                        global_step=self.global_step,
+                        error=repr(exc),
+                    )
+                    self._write_dashboard_state(
+                        status="stopping",
+                        phase="flush_failed",
+                        started_at=start_time,
+                        latest_metrics=last_logging_metrics,
+                        error=repr(exc),
+                    )
 
-        self.metric_logger.finish()
+            if final_status == "completed":
+                self.dashboard_telemetry.append_runner_event(
+                    "completed", global_step=self.global_step
+                )
+                self._write_dashboard_state(
+                    status="completed",
+                    phase="finished",
+                    started_at=start_time,
+                    latest_metrics=last_logging_metrics,
+                    note="Training completed.",
+                )
+            elif final_status == "stopped":
+                self.dashboard_telemetry.append_runner_event(
+                    "stopped",
+                    global_step=self.global_step,
+                    save_buffers=bool(
+                        stop_request.get("save_buffers", False)
+                        if stop_request is not None
+                        else False
+                    ),
+                )
+                self._write_dashboard_state(
+                    status="stopped",
+                    phase="finished",
+                    started_at=start_time,
+                    latest_metrics=last_logging_metrics,
+                    stop_requested=True,
+                    note="Training stopped gracefully.",
+                )
 
-        # Stop logging thread
-        self.stop_logging = True
-        self.log_queue.join()  # Wait for all queued logs to be processed
-        self.log_thread.join(timeout=1.0)
+            self.metric_logger.finish()
+            self._shutdown_logging_thread()
 
     def _save_checkpoint(self):
         self.logger.info(f"Saving checkpoint at step {self.global_step}.")

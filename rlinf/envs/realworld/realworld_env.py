@@ -272,11 +272,22 @@ class RealWorldEnv(gym.Env):
         raw_obs, _reward, terminations, truncations, infos = self.env.step(actions)
         terminations = np.asarray(terminations, dtype=bool).copy()
         env_truncations = np.asarray(truncations, dtype=bool).copy()
-        max_step_truncations = self.elapsed_steps >= self.cfg.max_episode_steps
-        truncations = env_truncations | max_step_truncations
 
         obs = self._wrap_obs(raw_obs)
         step_reward = self._calc_step_reward(_reward).copy()
+        intervene_flag = np.zeros(self.num_envs, dtype=bool)
+        if "intervene_action" in infos:
+            for env_id in range(self.num_envs):
+                if infos["intervene_action"][env_id] is not None:
+                    intervene_flag[env_id] = True
+        episode_intervened = self.intervened_once | intervene_flag
+        # Once a human takes over an episode, do not truncate it for max-step limits.
+        max_step_truncations = np.asarray(
+            (self.elapsed_steps >= self.cfg.max_episode_steps) & ~episode_intervened,
+            dtype=bool,
+        ).copy()
+        truncations = env_truncations | max_step_truncations
+
         success_flags = np.asarray(infos.get("success", terminations), dtype=bool).copy()
         timeout_fail = np.asarray(
             max_step_truncations & ~terminations, dtype=bool
@@ -290,11 +301,6 @@ class RealWorldEnv(gym.Env):
         infos["success"] = success_flags
         infos["fail"] = fail_flags
         infos["timeout_fail"] = timeout_fail
-        intervene_flag = np.zeros(self.num_envs, dtype=bool)
-        if "intervene_action" in infos:
-            for env_id in range(self.num_envs):
-                if infos["intervene_action"][env_id] is not None:
-                    intervene_flag[env_id] = True
         data_valid = np.ones(self.num_envs, dtype=bool)
         if "data_valid" in infos:
             data_valid = np.asarray(infos["data_valid"], dtype=bool).copy()

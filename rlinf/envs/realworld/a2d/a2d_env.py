@@ -183,6 +183,7 @@ class A2DEnv(gym.Env):
         self.env_worker_rank = 0
         self._configured_reset_controller_action = self._resolve_reset_controller_action()
         self._episode_reset_controller_action: Optional[np.ndarray] = None
+        self._episode_intervened = False
         if worker_info is not None:
             self.node_rank = worker_info.cluster_node_rank
             self.env_worker_rank = worker_info.rank
@@ -558,8 +559,13 @@ class A2DEnv(gym.Env):
             observation = self._extract_observation(self._robot_state)
             reward = self._calc_reward(self._robot_state)
             terminated = self._check_success(self._robot_state)
-            truncated = self._num_steps >= self.config.max_num_steps
             info = self._build_info(self._robot_state)
+            current_intervened = "intervene_action" in info
+            self._episode_intervened = self._episode_intervened or current_intervened
+            truncated = (
+                not self._episode_intervened
+                and self._num_steps >= self.config.max_num_steps
+            )
             return observation, reward, terminated, truncated, info
 
         self._num_steps += 1
@@ -570,6 +576,7 @@ class A2DEnv(gym.Env):
     def reset(self, seed=None, options=None):
         del options
         self._num_steps = 0
+        self._episode_intervened = False
         if self.config.is_dummy:
             return self._base_observation_space.sample(), {}
 

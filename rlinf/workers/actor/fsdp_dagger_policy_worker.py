@@ -190,6 +190,15 @@ class EmbodiedDAGGERFSDPPolicy(EmbodiedFSDPActor):
 
         return all_reduce_dict(mean_metric_dict, op=torch.distributed.ReduceOp.AVG)
 
+    def flush_runtime_buffers(self):
+        """Flush replay buffer state before a graceful shutdown."""
+        self.replay_buffer.flush()
+        return {
+            "rank": self._rank,
+            "replay_buffer_path": self.replay_buffer.auto_save_path,
+            "replay_buffer_stats": self.replay_buffer.get_stats(),
+        }
+
     @Worker.timer("run_training")
     def run_training(self):
         """Run DAgger updates with replay-buffer samples."""

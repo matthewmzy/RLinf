@@ -306,6 +306,8 @@ class TrajectoryReplayBuffer:
         # Separate executor for checkpoint saves
         self._checkpoint_executor = ThreadPoolExecutor(max_workers=20)
         self._index_lock = threading.Lock()
+        self._future_lock = threading.Lock()
+        self._pending_save_futures = []
 
         # Cached window metadata for faster sampling
         self._window_cache_size = None
@@ -330,6 +332,18 @@ class TrajectoryReplayBuffer:
         np.random.seed(seed)
         self.random_generator = torch.Generator()
         self.random_generator.manual_seed(seed)
+
+    def _track_save_future(self, future):
+        with self._future_lock:
+            self._pending_save_futures.append(future)
+
+        def _cleanup(done_future):
+            with self._future_lock:
+                if done_future in self._pending_save_futures:
+                    self._pending_save_futures.remove(done_future)
+
+        future.add_done_callback(_cleanup)
+        return future
 
     def _get_trajectory_path(
         self,
@@ -470,11 +484,13 @@ class TrajectoryReplayBuffer:
             if self.auto_save:
                 # Save asynchronously to reduce I/O stalls
                 save_futures.append(
-                    self._save_executor.submit(
-                        self._save_trajectory,
-                        trajectory,
-                        trajectory_id,
-                        model_weights_id,
+                    self._track_save_future(
+                        self._save_executor.submit(
+                            self._save_trajectory,
+                            trajectory,
+                            trajectory_id,
+                            model_weights_id,
+                        )
                     )
                 )
                 self._trajectory_file_path[trajectory_id] = self.auto_save_path
@@ -512,22 +528,26 @@ class TrajectoryReplayBuffer:
                 self._save_metadata()
                 self._save_trajectory_index()
 
-            self._save_executor.submit(_flush_metadata)
+            self._track_save_future(self._save_executor.submit(_flush_metadata))
 
-    def _reshape_flat_for_save(self, value: object, T: int, B: int) -> object:
-        if isinstance(value, torch.Tensor):
-            if value.dim() >= 1 and value.shape[0] == T * B:
-                return value.reshape(T, B, *value.shape[1:])
-            return value
-        if isinstance(value, dict):
-            return {
-                key: self._reshape_flat_for_save(val, T, B)
-                for key, val in value.items()
-            }
-        return value
+    def flush(self):
+        """Block until all pending async trajectory saves have completed."""
+        while True:
+            with self._future_lock:
+                pending = list(self._pending_save_futures)
+            if not pending:
+                break
+            for future in pending:
+                future.result()
+
+        if self.auto_save and self.auto_save_path is not None:
+            self._save_metadata()
+            self._save_trajectory_index()
 
     def close(self, wait: bool = True):
         """Flush and shutdown async save executor."""
+        if wait:
+            self.flush()
         if self._save_executor is not None:
             self._save_executor.shutdown(wait=wait)
         if self._checkpoint_executor is not None:
@@ -708,6 +728,19 @@ class TrajectoryReplayBuffer:
             )
 
         return batch if batch is not None else {}
+
+    def _reshape_flat_for_save(self, value: object, T: int, B: int) -> object:
+        if isinstance(value, torch.Tensor):
+            if value.dim() >= 1 and value.shape[0] == T * B:
+                return value.reshape(T, B, *value.shape[1:])
+            return value
+        if isinstance(value, dict):
+            return {
+                key: self._reshape_flat_for_save(val, T, B)
+                for key, val in value.items()
+            }
+        return value
+
 
     def _flatten_trajectory(self, trajectory: Trajectory) -> dict:
         flat: dict[str, object] = {}
@@ -927,6 +960,8 @@ class TrajectoryReplayBuffer:
         """
         Save buffer state (metadata and indices) to save_path.
         """
+        self.flush()
+
         # Create save directory
         os.makedirs(save_path, exist_ok=True)
 

@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>A2D Realworld RL Console</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <div class="bg-orb orb-a"></div>
+    <div class="bg-orb orb-b"></div>
+    <div class="bg-grid"></div>
+
+    <main class="app-shell">
+      <section class="hero panel">
+        <div>
+          <p class="eyebrow">A2D Realworld RL Console</p>
+          <h1>真机强化学习控制台</h1>
+          <p class="hero-copy">
+            实时看 rollout、buffer、actor/critic 更新，按键启动或停止训练，并在停止时决定是否保留全部 buffer 数据。
+          </p>
+        </div>
+        <div class="hero-status">
+          <div class="status-badge" id="statusBadge">Idle</div>
+          <div class="shortcut-list">
+            <span><kbd>Shift</kbd> + <kbd>Enter</kbd> 启动</span>
+            <span><kbd>Shift</kbd> + <kbd>S</kbd> 停止并保留 buffer</span>
+            <span><kbd>Shift</kbd> + <kbd>D</kbd> 停止并丢弃 buffer</span>
+            <span><kbd>Shift</kbd> + <kbd>X</kbd> 强制终止</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="layout">
+        <aside class="control-rail">
+          <div class="panel control-panel">
+            <div class="panel-head">
+              <h2>训练控制</h2>
+              <span class="panel-note">本地 Dashboard 直接拉起训练进程</span>
+            </div>
+            <label class="field">
+              <span>配置</span>
+              <select id="configSelect"></select>
+            </label>
+            <label class="field">
+              <span>实验名</span>
+              <input id="experimentName" type="text" placeholder="a2d_rl_dashboard_run" />
+            </label>
+            <label class="field field-checkbox">
+              <input id="persistBuffers" type="checkbox" checked />
+              <span>实时持久化全部 buffer 数据，支持停止时选择保留或丢弃</span>
+            </label>
+            <label class="field">
+              <span>额外 Hydra Overrides</span>
+              <textarea
+                id="extraOverrides"
+                rows="7"
+                placeholder="例如：actor.micro_batch_size=8 actor.global_batch_size=8 rollout.enable_torch_compile=False"
+              ></textarea>
+            </label>
+            <div class="button-stack">
+              <button class="btn btn-primary" id="startBtn">启动训练</button>
+              <button class="btn btn-accent" id="stopSaveBtn">停止并保留 Buffer</button>
+              <button class="btn btn-muted" id="stopDiscardBtn">停止并丢弃 Buffer</button>
+              <button class="btn btn-danger" id="forceStopBtn">强制终止</button>
+            </div>
+            <div class="action-feedback" id="actionFeedback"></div>
+          </div>
+
+          <div class="panel info-panel">
+            <div class="panel-head">
+              <h2>当前会话</h2>
+            </div>
+            <dl class="meta-list">
+              <div><dt>配置</dt><dd id="metaConfig">-</dd></div>
+              <div><dt>PID</dt><dd id="metaPid">-</dd></div>
+              <div><dt>Phase</dt><dd id="metaPhase">-</dd></div>
+              <div><dt>Step</dt><dd id="metaStep">-</dd></div>
+              <div><dt>Session</dt><dd id="metaSession">-</dd></div>
+              <div><dt>Log</dt><dd id="metaLog">-</dd></div>
+              <div><dt>Buffer</dt><dd id="metaBufferDir">-</dd></div>
+            </dl>
+          </div>
+        </aside>
+
+        <section class="main-board">
+          <div class="card-grid" id="cardGrid"></div>
+
+          <div class="panel chart-panel">
+            <div class="panel-head">
+              <h2>训练脉搏</h2>
+              <span class="panel-note">step 级和 update 级指标实时刷新</span>
+            </div>
+            <div class="chart-grid">
+              <div class="chart-card">
+                <div class="chart-head"><h3>Actor Loss</h3><span id="actorLossValue">-</span></div>
+                <div class="chart-surface" id="chart-actor-loss"></div>
+              </div>
+              <div class="chart-card">
+                <div class="chart-head"><h3>Critic Loss</h3><span id="criticLossValue">-</span></div>
+                <div class="chart-surface" id="chart-critic-loss"></div>
+              </div>
+              <div class="chart-card">
+                <div class="chart-head"><h3>Alpha</h3><span id="alphaValue">-</span></div>
+                <div class="chart-surface" id="chart-alpha"></div>
+              </div>
+              <div class="chart-card">
+                <div class="chart-head"><h3>Replay Buffer</h3><span id="replayValue">-</span></div>
+                <div class="chart-surface" id="chart-replay"></div>
+              </div>
+              <div class="chart-card">
+                <div class="chart-head"><h3>Demo Buffer</h3><span id="demoValue">-</span></div>
+                <div class="chart-surface" id="chart-demo"></div>
+              </div>
+              <div class="chart-card">
+                <div class="chart-head"><h3>Reward / Success</h3><span id="envValue">-</span></div>
+                <div class="chart-surface dual-chart" id="chart-env"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="two-col">
+            <div class="panel update-panel">
+              <div class="panel-head">
+                <h2>Actor / Critic 更新流</h2>
+                <span class="panel-note">每次 `update_one_epoch` 的关键指标</span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Update</th>
+                      <th>Global Step</th>
+                      <th>Critic</th>
+                      <th>Actor</th>
+                      <th>Alpha</th>
+                      <th>Replay</th>
+                      <th>Demo</th>
+                    </tr>
+                  </thead>
+                  <tbody id="updateTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="panel log-panel">
+              <div class="panel-head">
+                <h2>训练日志</h2>
+                <span class="panel-note">最近 180 行 stdout / stderr</span>
+              </div>
+              <pre id="logTail"></pre>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

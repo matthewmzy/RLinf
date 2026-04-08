@@ -43,6 +43,7 @@ from rlinf.utils.nested_dict_process import (
     put_tensor_device,
     split_dict_to_chunk,
 )
+from rlinf.utils.dashboard_telemetry import DashboardTelemetry
 from rlinf.utils.utils import clear_memory
 from rlinf.workers.actor.fsdp_actor_worker import EmbodiedFSDPActor
 
@@ -60,6 +61,7 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
         self.update_step = 0
         self.enable_drq = bool(getattr(self.cfg.actor, "enable_drq", False))
         self._cached_rl_action_mask = None
+        self.dashboard_telemetry = DashboardTelemetry()
 
     def init_worker(self):
         self.setup_model_and_optimizer(initialize_target=True)
@@ -858,6 +860,17 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             metrics_data = self.update_one_epoch(train_actor=train_actor)
             append_to_dict(metrics, metrics_data)
             self.update_step += 1
+            if self._rank == 0 and self.dashboard_telemetry.enabled:
+                self.dashboard_telemetry.append_actor_update(
+                    rank=self._rank,
+                    global_step=self.version,
+                    update_step=self.update_step,
+                    metrics=metrics_data,
+                    replay_buffer=self.replay_buffer.get_stats(),
+                    demo_buffer=self.demo_buffer.get_stats()
+                    if self.demo_buffer is not None
+                    else None,
+                )
 
         mean_metric_dict = self.process_train_metrics(metrics)
 
@@ -865,6 +878,20 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
         torch.distributed.barrier()
         torch.cuda.empty_cache()
         return mean_metric_dict
+
+    def flush_runtime_buffers(self):
+        """Flush replay/demo buffers before a graceful shutdown."""
+        self.replay_buffer.flush()
+        result = {
+            "rank": self._rank,
+            "replay_buffer_path": self.replay_buffer.auto_save_path,
+            "replay_buffer_stats": self.replay_buffer.get_stats(),
+        }
+        if self.demo_buffer is not None:
+            self.demo_buffer.flush()
+            result["demo_buffer_path"] = self.demo_buffer.auto_save_path
+            result["demo_buffer_stats"] = self.demo_buffer.get_stats()
+        return result
 
     def compute_advantages_and_returns(self):
         """
@@ -922,6 +949,11 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             save_base_path, f"sac_components/replay_buffer/rank_{self._rank}"
         )
         self.replay_buffer.save_checkpoint(buffer_save_path)
+        if self.demo_buffer is not None:
+            demo_buffer_save_path = os.path.join(
+                save_base_path, f"sac_components/demo_buffer/rank_{self._rank}"
+            )
+            self.demo_buffer.save_checkpoint(demo_buffer_save_path)
 
     def load_checkpoint(self, load_base_path):
         # load model
@@ -964,3 +996,9 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             load_base_path, f"sac_components/replay_buffer/rank_{self._rank}"
         )
         self.replay_buffer.load_checkpoint(buffer_load_path)
+        if self.demo_buffer is not None:
+            demo_buffer_load_path = os.path.join(
+                load_base_path, f"sac_components/demo_buffer/rank_{self._rank}"
+            )
+            if os.path.exists(demo_buffer_load_path):
+                self.demo_buffer.load_checkpoint(demo_buffer_load_path)

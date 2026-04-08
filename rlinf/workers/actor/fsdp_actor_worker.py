@@ -1501,3 +1501,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         self.version = global_step
         if hasattr(self.model, "set_global_step"):
             self.model.set_global_step(global_step)
+
+    def flush_runtime_buffers(self):
+        """Flush any runtime buffer state to stable storage if the worker has one."""
+        return {}

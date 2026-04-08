@@ -144,6 +144,7 @@ def test_realworld_step_preserves_underlying_truncation():
     env.auto_reset = False
     env.ignore_terminations = False
     env._elapsed_steps = np.zeros(1, dtype=np.int32)
+    env.intervened_once = np.zeros(1, dtype=bool)
     env.env = SimpleNamespace(
         step=lambda actions: (
             {"unused": True},
@@ -164,6 +165,69 @@ def test_realworld_step_preserves_underlying_truncation():
     assert reward.item() == 0.0
     assert terminations.item() is False
     assert truncations.item() is True
+    assert infos["timeout_fail"].item() is False
+
+
+def test_realworld_step_skips_max_step_truncation_on_intervention_step():
+    env = object.__new__(RealWorldEnv)
+    env.cfg = SimpleNamespace(max_episode_steps=10)
+    env.num_envs = 1
+    env.auto_reset = False
+    env.ignore_terminations = False
+    env._elapsed_steps = np.array([9], dtype=np.int32)
+    env.intervened_once = np.zeros(1, dtype=bool)
+    env.env = SimpleNamespace(
+        step=lambda actions: (
+            {"unused": True},
+            np.array([0.0], dtype=np.float32),
+            np.array([False]),
+            np.array([False]),
+            {"intervene_action": [np.array([1.0], dtype=np.float32)]},
+        )
+    )
+    env._wrap_obs = lambda raw_obs: {"raw_obs": raw_obs}
+    env._calc_step_reward = lambda reward: reward.astype(np.float32)
+    env._record_metrics = lambda step_reward, terminations, intervene_flag, infos: infos
+
+    _, reward, terminations, truncations, infos = RealWorldEnv.step(
+        env, np.zeros((1, 1), dtype=np.float32), auto_reset=False
+    )
+
+    assert reward.item() == 0.0
+    assert terminations.item() is False
+    assert truncations.item() is False
+    assert infos["intervene_flag"].item() is True
+    assert infos["timeout_fail"].item() is False
+
+
+def test_realworld_step_skips_max_step_truncation_after_prior_intervention():
+    env = object.__new__(RealWorldEnv)
+    env.cfg = SimpleNamespace(max_episode_steps=10)
+    env.num_envs = 1
+    env.auto_reset = False
+    env.ignore_terminations = False
+    env._elapsed_steps = np.array([9], dtype=np.int32)
+    env.intervened_once = np.array([True], dtype=bool)
+    env.env = SimpleNamespace(
+        step=lambda actions: (
+            {"unused": True},
+            np.array([0.0], dtype=np.float32),
+            np.array([False]),
+            np.array([False]),
+            {},
+        )
+    )
+    env._wrap_obs = lambda raw_obs: {"raw_obs": raw_obs}
+    env._calc_step_reward = lambda reward: reward.astype(np.float32)
+    env._record_metrics = lambda step_reward, terminations, intervene_flag, infos: infos
+
+    _, reward, terminations, truncations, infos = RealWorldEnv.step(
+        env, np.zeros((1, 1), dtype=np.float32), auto_reset=False
+    )
+
+    assert reward.item() == 0.0
+    assert terminations.item() is False
+    assert truncations.item() is False
     assert infos["timeout_fail"].item() is False
 
 

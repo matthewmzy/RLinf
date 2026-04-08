@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
+
 import pytest
 
 np = pytest.importorskip("numpy")
@@ -196,3 +198,54 @@ def test_a2d_env_marks_idle_frames_invalid():
     assert info["control_mode_name"] == "idle"
     assert info["data_valid"] is False
     assert "intervene_action" not in info
+
+
+class _Waitable:
+    def __init__(self, value):
+        self._value = value
+
+    def wait(self):
+        return self._value
+
+
+def test_a2d_env_disables_step_limit_after_intervention():
+    pytest.importorskip("gymnasium")
+    from rlinf.envs.realworld.a2d import A2DEnv
+
+    env = object.__new__(A2DEnv)
+    env.config = SimpleNamespace(
+        is_dummy=False,
+        clip_policy_actions=False,
+        max_num_steps=1,
+        step_frequency=1e9,
+    )
+    env._num_steps = 0
+    env._episode_intervened = False
+    env._robot_state = object()
+    env._map_policy_action_to_controller = lambda action: action
+    env._extract_observation = lambda robot_state: {"state": {}, "frames": {}}
+    env._calc_reward = lambda robot_state: 0.0
+    env._check_success = lambda robot_state: False
+
+    info_sequence = [
+        {"intervene_action": np.array([0.0, 0.0], dtype=np.float32)},
+        {},
+    ]
+    env._build_info = lambda robot_state: info_sequence.pop(0)
+    env._controller = SimpleNamespace(
+        set_action=lambda action: _Waitable(None),
+        get_state=lambda: _Waitable([object()]),
+    )
+
+    _, _, terminated_1, truncated_1, _ = A2DEnv.step(
+        env, np.zeros((2,), dtype=np.float32)
+    )
+    _, _, terminated_2, truncated_2, _ = A2DEnv.step(
+        env, np.zeros((2,), dtype=np.float32)
+    )
+
+    assert terminated_1 is False
+    assert truncated_1 is False
+    assert env._episode_intervened is True
+    assert terminated_2 is False
+    assert truncated_2 is False
