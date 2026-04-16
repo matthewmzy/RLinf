@@ -196,6 +196,16 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
                 "trajectory_format", "pt"
             ),
         )
+        if self.cfg.algorithm.replay_buffer.get("load_path", None) is not None:
+            self.log_on_first_rank(
+                f"Loading replay buffer from {self.cfg.algorithm.replay_buffer.load_path}"
+            )
+            self.replay_buffer.load_checkpoint(
+                self.cfg.algorithm.replay_buffer.load_path,
+                is_distributed=True,
+                local_rank=self._rank,
+                world_size=self._world_size,
+            )
 
         min_demo_buffer_size = 0
         if self.cfg.algorithm.get("demo_buffer", None) is not None:
@@ -257,6 +267,31 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
         assert self.target_update_type in ["all", "q_head_only"], (
             f"{self.target_update_type=} is not suppported!"
         )
+
+    def _prepare_training_loop(self) -> bool:
+        if self.cfg.actor.get("enable_offload", False):
+            self.load_param_and_grad(self.device)
+            self.load_optimizer(self.device)
+
+        min_buffer_size = self.cfg.algorithm.replay_buffer.get("min_buffer_size", 100)
+        if not self.replay_buffer.is_ready(min_buffer_size):
+            self.log_on_first_rank(
+                f"Replay buffer size {len(self.replay_buffer)} < {min_buffer_size}, skipping training"
+            )
+            return False
+
+        assert (
+            self.cfg.actor.global_batch_size
+            % (self.cfg.actor.micro_batch_size * self._world_size)
+            == 0
+        )
+        self.gradient_accumulation = (
+            self.cfg.actor.global_batch_size
+            // self.cfg.actor.micro_batch_size
+            // self._world_size
+        )
+        self.model.train()
+        return True
 
     def _init_target_shadow(self):
         """Create persistent float32 shadow of target model parameters.
@@ -338,6 +373,11 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             trajectory: Trajectory = await input_channel.get(async_op=True).async_wait()
             recv_list.append(trajectory)
 
+        self._add_received_trajectories_to_buffers(recv_list)
+
+    def _add_received_trajectories_to_buffers(
+        self, recv_list: list[Trajectory]
+    ) -> None:
         replay_traj_list = []
         for traj in recv_list:
             assert isinstance(traj, Trajectory)
@@ -345,18 +385,23 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             if valid_trajs is not None:
                 replay_traj_list.extend(valid_trajs)
 
-        if len(replay_traj_list) > 0:
+        if replay_traj_list:
             self.replay_buffer.add_trajectories(replay_traj_list)
 
-        if self.demo_buffer is not None:
-            intervene_traj_list = []
-            for traj in replay_traj_list:
-                intervene_trajs = traj.extract_intervene_traj()
-                if intervene_trajs is not None:
-                    intervene_traj_list.extend(intervene_trajs)
+        if self.demo_buffer is None:
+            return
 
-            if len(intervene_traj_list) > 0:
-                self.demo_buffer.add_trajectories(intervene_traj_list)
+        demo_traj_list = []
+        for traj in replay_traj_list:
+            if traj.intervene_flags is None:
+                continue
+            # Keep the full valid trajectory once a human has intervened, so the
+            # demo buffer preserves the model prefix + teleop suffix together.
+            if bool(traj.intervene_flags.to(torch.bool).any().item()):
+                demo_traj_list.append(traj)
+
+        if demo_traj_list:
+            self.demo_buffer.add_trajectories(demo_traj_list)
 
     def _build_rl_action_mask(self) -> torch.Tensor | None:
         if self.cfg.actor.model.get("model_type", None) != "psi_policy":
@@ -824,35 +869,14 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
     @Worker.timer("run_training")
     def run_training(self):
         """SAC training using replay buffer"""
-        if self.cfg.actor.get("enable_offload", False):
-            self.load_param_and_grad(self.device)
-            self.load_optimizer(self.device)
-
-        # Check if replay buffer has enough samples
-        min_buffer_size = self.cfg.algorithm.replay_buffer.get("min_buffer_size", 100)
-        if not self.replay_buffer.is_ready(min_buffer_size):
-            self.log_on_first_rank(
-                f"Replay buffer size {len(self.replay_buffer)} < {min_buffer_size}, skipping training"
-            )
+        if not self._prepare_training_loop():
             return {}
 
         # Delay actor training until buffer has enough samples
+        min_buffer_size = self.cfg.algorithm.replay_buffer.get("min_buffer_size", 100)
         train_actor_steps = self.cfg.algorithm.get("train_actor_steps", 0)
         train_actor_steps = max(min_buffer_size, train_actor_steps)
         train_actor = self.replay_buffer.is_ready(train_actor_steps)
-
-        assert (
-            self.cfg.actor.global_batch_size
-            % (self.cfg.actor.micro_batch_size * self._world_size)
-            == 0
-        )
-        self.gradient_accumulation = (
-            self.cfg.actor.global_batch_size
-            // self.cfg.actor.micro_batch_size
-            // self._world_size
-        )
-
-        self.model.train()
         metrics = {}
 
         update_epoch = self.cfg.algorithm.get("update_epoch", 1)
@@ -871,6 +895,26 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
                     if self.demo_buffer is not None
                     else None,
                 )
+
+        mean_metric_dict = self.process_train_metrics(metrics)
+
+        torch.cuda.synchronize()
+        torch.distributed.barrier()
+        torch.cuda.empty_cache()
+        return mean_metric_dict
+
+    @Worker.timer("run_critic_warmup")
+    def run_critic_warmup(self, num_updates: int = 1):
+        """Run offline critic-only updates from the replay buffer."""
+        if not self._prepare_training_loop():
+            return {}
+
+        num_updates = max(1, int(num_updates))
+        metrics = {}
+        for _ in range(num_updates):
+            metrics_data = self.update_one_epoch(train_actor=False)
+            append_to_dict(metrics, metrics_data)
+            self.update_step += 1
 
         mean_metric_dict = self.process_train_metrics(metrics)
 

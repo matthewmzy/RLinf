@@ -24,12 +24,23 @@ class BaseKeyboardRewardDoneWrapper(gym.Wrapper):
     def __init__(self, env: gym.Env, reward_mode: str = "always_replace"):
         super().__init__(env)
         self.reward_modifier = 0
-        self.listener = KeyboardListener()
+        self.listener = KeyboardListener(allowed_keys=self._get_supported_keys())
         self.reward_mode = reward_mode
         assert self.reward_mode in ["always_replace"]
 
+    def _get_supported_keys(self) -> set[str] | None:
+        return None
+
     def _check_keypress(self) -> tuple[bool, bool, float]:
         raise NotImplementedError
+
+    def clear_pending_keyboard_events(self) -> None:
+        self.listener.clear_pending_keys()
+
+    def reset(self, *, seed=None, options=None):
+        # Drop stale keyboard events that happened outside the active rollout.
+        self.clear_pending_keyboard_events()
+        return self.env.reset(seed=seed, options=options)
 
     def step(
         self, action: ActType
@@ -58,6 +69,9 @@ class BaseKeyboardRewardDoneWrapper(gym.Wrapper):
 
 
 class KeyboardRewardDoneWrapper(BaseKeyboardRewardDoneWrapper):
+    def _get_supported_keys(self) -> set[str] | None:
+        return {"f", "s"}
+
     def _check_keypress(self) -> tuple[bool, bool, float]:
         last_intervened = False
         done = False
@@ -82,6 +96,9 @@ class KeyboardRewardDoneMultiStageWrapper(BaseKeyboardRewardDoneWrapper):
     def __init__(self, env):
         super().__init__(env)
         self.stage_rewards = [0, 0.1, 1]
+
+    def _get_supported_keys(self) -> set[str] | None:
+        return {"a", "b", "c", "q"}
 
     def reset(self, *, seed=None, options=None):
         self.reward_stage = 0

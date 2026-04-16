@@ -136,6 +136,8 @@ class AsyncEmbodiedRunner(EmbodiedRunner):
     def run(self):
         start_step = self.global_step
         start_time = time.time()
+        self.actor.set_global_step(self.global_step).wait()
+        self.rollout.set_global_step(self.global_step).wait()
         self.update_rollout_weights(no_wait=self.sync_weight_no_wait)
 
         env_handle: Handle = self.env.interact(
@@ -163,6 +165,8 @@ class AsyncEmbodiedRunner(EmbodiedRunner):
 
                 if not skip_step:
                     self.global_step += 1
+                    self.actor.set_global_step(self.global_step).wait()
+                    self.rollout.set_global_step(self.global_step).wait()
                     if self.global_step % self.weight_sync_interval == 0:
                         self.update_rollout_weights(no_wait=self.sync_weight_no_wait)
 
@@ -264,6 +268,9 @@ class AsyncEmbodiedRunner(EmbodiedRunner):
                 start_step,
             )
 
+        self.metric_logger.finish()
+        self._shutdown_logging_thread()
+        self._cleanup_pending_rollout_weight_sync(no_wait=False)
         self.env.stop().wait()
         self.rollout.stop().wait()
         self.actor.stop().wait()

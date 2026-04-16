@@ -79,17 +79,19 @@ algorithm:
   critic_actor_ratio: 4
   train_actor_steps: 20
   replay_buffer:
-    enable_cache: True
-    cache_size: 200
+    enable_cache: False      # Real-robot RGB trajectories are too large to keep flattened in RAM.
+    cache_size: 200          # Ignored when enable_cache=False; kept for quick local experiments.
     min_buffer_size: 2
     sample_window_size: 200
-    auto_save: False
+    auto_save: True          # Persist trajectories to disk so sampling can load them on demand.
+    enable_preload: True     # Prefetch replay/demo batches in a background thread while the robot is rolling out.
+    prefetch_size: 4         # Keep a few ready-to-train batches so SAC does not pause as long between episodes.
   demo_buffer:
-    enable_cache: True
-    cache_size: 200
+    enable_cache: False      # Intervention demos include full image trajectories; avoid RAM blow-ups.
+    cache_size: 200          # Ignored when enable_cache=False.
     min_buffer_size: 1
     sample_window_size: 200
-    auto_save: False
+    auto_save: True          # Keep full intervention trajectories on disk instead of caching in memory.
     allow_replay_only_until_ready: True
   target_update_freq: 1
   sampling_params:
@@ -126,14 +128,12 @@ env:
       clip_policy_actions: False
       reset_controller_action:
         [
-          0.43599599599838257, 0.40000006556510925,
-          1.483843207359314, -0.6396821141242981, -0.6142574548721313, -1.4895319938659668,
-          1.0360413789749146, -0.8038167953491211, -1.021767258644104, -1.4656429290771484,
-          0.8815041780471802, 0.1507505476474762, 1.0609948635101318, -1.4735652208328247,
-          1.2199993133544922, 1.6188714504241943, 0.006837606895714998, 0.0,
-          0.13968254625797272, 0.17142857611179352, 0.9335775375366211, 1.0,
-          0.0, 0.0063492064364254475, 0.0, 0.0014652014942839742,
-          0.9982905983924866, 0.9982905983924866,
+          0.4359927773, 0.4000000358,
+          1.9186979532, -0.3541278243, -0.6377061009, -1.4183576107, 1.7035353184, -1.3996603489,
+          -1.0161094666, -1.7632544041, 0.4664293826, 0.5196883678, 1.4352442026, -1.8059952259,
+          1.3993842602, 1.0743135214, 0.2494447380, 0.0009070295, 0.0032560034, 0.0135472994,
+          0.9290074110, 0.9444035888, 0.0000000000, 0.0018140590, 0.0822954923, 0.0947613269,
+          0.9975231886, 0.9968835711,
         ]
       reset_move_timeout_s: 12.0
       reset_tolerance: 0.03
@@ -197,14 +197,12 @@ env:
       clip_policy_actions: False
       reset_controller_action:
         [
-          0.43599599599838257, 0.40000006556510925,
-          1.483843207359314, -0.6396821141242981, -0.6142574548721313, -1.4895319938659668,
-          1.0360413789749146, -0.8038167953491211, -1.021767258644104, -1.4656429290771484,
-          0.8815041780471802, 0.1507505476474762, 1.0609948635101318, -1.4735652208328247,
-          1.2199993133544922, 1.6188714504241943, 0.006837606895714998, 0.0,
-          0.13968254625797272, 0.17142857611179352, 0.9335775375366211, 1.0,
-          0.0, 0.0063492064364254475, 0.0, 0.0014652014942839742,
-          0.9982905983924866, 0.9982905983924866,
+          0.4359927773, 0.4000000358,
+          1.9186979532, -0.3541278243, -0.6377061009, -1.4183576107, 1.7035353184, -1.3996603489,
+          -1.0161094666, -1.7632544041, 0.4664293826, 0.5196883678, 1.4352442026, -1.8059952259,
+          1.3993842602, 1.0743135214, 0.2494447380, 0.0009070295, 0.0032560034, 0.0135472994,
+          0.9290074110, 0.9444035888, 0.0000000000, 0.0018140590, 0.0822954923, 0.0947613269,
+          0.9975231886, 0.9968835711,
         ]
       reset_move_timeout_s: 12.0
       reset_tolerance: 0.03

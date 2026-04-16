@@ -15,6 +15,7 @@
 """Psi-policy wrapper with RLinf SAC interfaces."""
 
 import copy
+import contextlib
 import logging
 import os
 import pickle
@@ -25,6 +26,7 @@ from typing import Any, Optional
 
 import dill
 import hydra
+import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -81,13 +83,14 @@ class PsiPolicyConfig:
     num_q_heads: int = 2
     q_hidden_dims: list[int] = field(default_factory=lambda: [256, 256, 256])
 
-    noise_std_train: float = 0.3
-    noise_std_rollout: float = 0.02
+    noise_std_train: float = 0.05
+    noise_std_rollout: float = 0.005
     num_action_chunks: int = 4
 
     image_size: int = 224
     obs_horizon: int = 1
     fallback_hidden_size: int = 256
+    train_obs_encoder: bool = False
 
     state_split: dict[str, list[int]] = field(
         default_factory=lambda: {
@@ -272,6 +275,21 @@ def _build_shape_meta(cfg: PsiPolicyConfig) -> dict[str, Any]:
     }
 
 
+@contextlib.contextmanager
+def _disable_timm_pretrained_download():
+    original_create_model = timm.create_model
+
+    def _create_model_without_remote_pretrained(*args, **kwargs):
+        kwargs["pretrained"] = False
+        return original_create_model(*args, **kwargs)
+
+    timm.create_model = _create_model_without_remote_pretrained
+    try:
+        yield
+    finally:
+        timm.create_model = original_create_model
+
+
 class SimplePsiObsEncoder(nn.Module):
     """Checkpoint-free fallback encoder for tests and local smoke runs."""
 
@@ -377,6 +395,8 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         self.obs_encoder = self.policy.obs_encoder
         self.model = self.policy.model
         self.normalizer = self.policy.normalizer
+        if not self.cfg.train_obs_encoder:
+            self.obs_encoder.requires_grad_(False)
         self.action_dim = int(self.policy.action_dim)
         self.action_horizon = int(self.policy.action_horizon)
         rl_action_mask, active_rl_action_indices = _build_rl_action_mask(
@@ -410,6 +430,10 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             self.action_dim,
             self.active_rl_action_indices,
         )
+        logger.info(
+            "PsiPolicyForRL obs_encoder training is %s.",
+            "enabled" if self.cfg.train_obs_encoder else "disabled (frozen)",
+        )
 
     @property
     def num_action_chunks(self):
@@ -418,6 +442,32 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
     @property
     def device(self):
         return next(self.parameters()).device
+
+    def _get_obs_encoder_device(self) -> torch.device:
+        if not hasattr(self, "obs_encoder"):
+            return self.device
+        try:
+            return next(self.obs_encoder.parameters()).device
+        except StopIteration:
+            return self.device
+
+    def _get_obs_encoder_dtype(self) -> torch.dtype:
+        if not hasattr(self, "obs_encoder"):
+            return next(self.parameters()).dtype
+        try:
+            return next(self.obs_encoder.parameters()).dtype
+        except StopIteration:
+            return next(self.parameters()).dtype
+
+    def _move_obs_dict_to_encoder_device(
+        self, obs: dict[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        obs_device = self._get_obs_encoder_device()
+        obs_dtype = self._get_obs_encoder_dtype()
+        return {
+            key: value.to(device=obs_device, dtype=obs_dtype).contiguous()
+            for key, value in obs.items()
+        }
 
     def get_sac_target_entropy(self) -> float:
         return -float(self.active_rl_action_dim)
@@ -454,20 +504,34 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             payload = torch.load(fp, map_location="cpu", pickle_module=dill, weights_only=False)
 
         cfg = copy.deepcopy(payload["cfg"])
-        cls = hydra.utils.get_class(cfg._target_)
-        cfg.optimizer.start_ckpt_path = None
-        if hasattr(cfg.optimizer, "start_normalizer_path"):
-            cfg.optimizer.start_normalizer_path = None
-        workspace = cls(cfg)
-        workspace.load_payload(payload, exclude_keys=None, include_keys=None)
+        policy_state_key = self.cfg.checkpoint_model_key
+        if policy_state_key not in payload["state_dicts"]:
+            available_keys = sorted(payload["state_dicts"].keys())
+            if policy_state_key == "ema_model" and "model" in payload["state_dicts"]:
+                logger.warning(
+                    "psi-policy checkpoint does not contain '%s'; falling back to 'model'. "
+                    "Available state_dicts=%s",
+                    policy_state_key,
+                    available_keys,
+                )
+                policy_state_key = "model"
+            else:
+                raise KeyError(
+                    f"psi-policy checkpoint missing state_dict '{policy_state_key}'. "
+                    f"Available state_dicts: {available_keys}"
+                )
 
-        if (
-            self.cfg.checkpoint_model_key == "ema_model"
-            and getattr(workspace, "ema_model", None) is not None
-        ):
-            policy = workspace.ema_model
-        else:
-            policy = workspace.model
+        # Instantiate only the policy graph instead of the full training workspace.
+        # This avoids importing training-only modules that may drift from the runtime env.
+        with _disable_timm_pretrained_download():
+            policy = hydra.utils.instantiate(copy.deepcopy(cfg.policy))
+        load_result = policy.load_state_dict(payload["state_dicts"][policy_state_key], strict=True)
+        if load_result.missing_keys or load_result.unexpected_keys:
+            raise RuntimeError(
+                "psi-policy checkpoint load is not strict: "
+                f"missing_keys={load_result.missing_keys}, "
+                f"unexpected_keys={load_result.unexpected_keys}"
+            )
 
         if self.cfg.normalizer_path:
             self._override_policy_normalizer(policy, self.cfg.normalizer_path)
@@ -480,10 +544,12 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         self.shape_meta = copy.deepcopy(cfg.shape_meta)
         self._sync_runtime_cfg_from_checkpoint(cfg, policy)
         logger.info(
-            "Loaded psi-policy checkpoint with obs_horizon=%s, action_horizon=%s, encoder_target=%s",
+            "Loaded psi-policy checkpoint with obs_horizon=%s, action_horizon=%s, "
+            "encoder_target=%s, state_dict_key=%s",
             cfg.n_obs_steps,
             cfg.n_action_steps,
             cfg.policy.obs_encoder._target_,
+            policy_state_key,
         )
         return policy
 
@@ -563,7 +629,9 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
                 f"psi-policy states must have shape [B, D] or [B, T, D], got {tuple(states.shape)}."
             )
         states = self._pad_or_truncate_time(states, target_horizon)
-        return states.to(device=self.device, dtype=torch.float32).contiguous()
+        return states.to(
+            device=self._get_obs_encoder_device(), dtype=torch.float32
+        ).contiguous()
 
     def _to_btchw(
         self, image: torch.Tensor, target_horizon: int, target_size: tuple[int, int]
@@ -588,7 +656,9 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             )
 
         image = self._pad_or_truncate_time(image, target_horizon)
-        image = image.to(device=self.device, dtype=torch.float32)
+        image = image.to(
+            device=self._get_obs_encoder_device(), dtype=torch.float32
+        )
         if torch.any(image > 1.0):
             image = image / 255.0
 
@@ -703,9 +773,14 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
 
     def encode_obs(self, obs: dict[str, torch.Tensor], detach_encoder: bool = False):
         nobs = self.normalizer.normalize(obs)
-        cond_tokens = self.obs_encoder(nobs, training=self.training)
+        nobs = self._move_obs_dict_to_encoder_device(nobs)
+        train_obs_encoder = bool(
+            self.cfg.train_obs_encoder and self.training and not detach_encoder
+        )
+        with torch.set_grad_enabled(train_obs_encoder):
+            cond_tokens = self.obs_encoder(nobs, training=train_obs_encoder)
         obs_feature = cond_tokens.mean(dim=1)
-        if detach_encoder:
+        if detach_encoder or not train_obs_encoder:
             cond_tokens = cond_tokens.detach()
             obs_feature = obs_feature.detach()
         return cond_tokens, obs_feature

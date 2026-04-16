@@ -84,6 +84,11 @@ class MultiStepRolloutWorker(Worker):
         self.version = 0
         self.finished_episodes = None
 
+    def _move_models_to_runtime_device(self):
+        self.hf_model.to(self.device)
+        if self.expert_model is not None:
+            self.expert_model.to(self.device)
+
     def init_worker(self):
         rollout_model_config = copy.deepcopy(self.cfg.actor.model)
         with open_dict(rollout_model_config):
@@ -109,6 +114,7 @@ class MultiStepRolloutWorker(Worker):
                 expert_model_dict = torch.load(self.cfg.runner.expert_ckpt_path)
                 self.expert_model.load_state_dict(expert_model_dict)
 
+        self._move_models_to_runtime_device()
         self.hf_model.eval()
         if self.expert_model is not None:
             self.expert_model.eval()
@@ -354,15 +360,27 @@ class MultiStepRolloutWorker(Worker):
         while finished_stages < self.num_pipeline_stages:
             env_output = await self.recv_env_output(input_channel)
             actions, result = self.predict(env_output["obs"])
+            version_tensor = torch.full(
+                (actions.shape[0], 1),
+                float(self.version),
+                dtype=torch.float32,
+                device=actions.device,
+            )
 
             if env_output.get("rollout_stop", False):
+                stop_bootstrap_obs = env_output.get("final_obs", None)
+                if stop_bootstrap_obs is None:
+                    # A rollout epoch can stop on a chunk boundary even though the
+                    # episode is still alive (for example after human takeover on
+                    # the real robot). Keep a batch-shaped tensor in the stop
+                    # message so the env worker can finish the epoch cleanly.
+                    stop_bootstrap_obs = env_output["obs"]
                 rollout_result = RolloutResult(
                     prev_values=result["prev_values"]
                     if self.collect_prev_infos
                     else None,
-                    bootstrap_values=self.get_bootstrap_values(
-                        env_output.get("final_obs", None)
-                    ),
+                    bootstrap_values=self.get_bootstrap_values(stop_bootstrap_obs),
+                    versions=version_tensor,
                 )
                 finished_stages += 1
             else:
@@ -387,12 +405,7 @@ class MultiStepRolloutWorker(Worker):
                     ),
                     save_flags=save_flags,
                     forward_inputs=result["forward_inputs"],
-                    versions=torch.full(
-                        (actions.shape[0], 1),
-                        float(self.version),
-                        dtype=torch.float32,
-                        device=actions.device,
-                    ),
+                    versions=version_tensor,
                 )
             self.send_rollout_result(output_channel, rollout_result, mode="train")
 
@@ -438,7 +451,7 @@ class MultiStepRolloutWorker(Worker):
         self.torch_platform.empty_cache()
 
     def reload_model(self):
-        self.hf_model.to(self.device)
+        self._move_models_to_runtime_device()
         if self.enable_cuda_graph:
             self.hf_model.capture_cuda_graph(
                 train_batch_size=self.train_batch_size,

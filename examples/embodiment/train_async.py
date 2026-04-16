@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import os
 
 import hydra
 import torch.multiprocessing as mp
@@ -70,6 +71,51 @@ def main(cfg) -> None:
         raise ValueError(
             f"Unsupported loss type {cfg.algorithm.loss_type} for async embodied runner"
         )
+
+    offline_critic_warmup_updates = int(
+        cfg.runner.get("offline_critic_warmup_updates", 0)
+    )
+    if offline_critic_warmup_updates > 0:
+        warmup_micro_batch_size = cfg.runner.get(
+            "offline_critic_warmup_micro_batch_size", None
+        )
+        warmup_global_batch_size = cfg.runner.get(
+            "offline_critic_warmup_global_batch_size", None
+        )
+        if warmup_micro_batch_size is not None:
+            cfg.actor.micro_batch_size = int(warmup_micro_batch_size)
+        if warmup_global_batch_size is not None:
+            cfg.actor.global_batch_size = int(warmup_global_batch_size)
+        actor_group = actor_worker_cls.create_group(cfg).launch(
+            cluster, name=cfg.actor.group_name, placement_strategy=actor_placement
+        )
+        actor_group.init_worker().wait()
+        warmup_metrics = actor_group.run_critic_warmup(
+            num_updates=offline_critic_warmup_updates
+        ).wait()
+        save_dir = cfg.runner.get("offline_critic_warmup_save_dir", None)
+        if save_dir is None:
+            save_dir = os.path.join(
+                cfg.runner.logger.log_path,
+                "offline_critic_warmup",
+                f"updates_{offline_critic_warmup_updates}",
+            )
+        actor_save_dir = os.path.join(save_dir, "actor")
+        actor_group.save_checkpoint(actor_save_dir, offline_critic_warmup_updates).wait()
+        print(
+            json.dumps(
+                {
+                    "offline_critic_warmup_updates": offline_critic_warmup_updates,
+                    "offline_critic_warmup_save_dir": save_dir,
+                    "offline_critic_warmup_actor_dir": actor_save_dir,
+                    "offline_critic_warmup_micro_batch_size": cfg.actor.micro_batch_size,
+                    "offline_critic_warmup_global_batch_size": cfg.actor.global_batch_size,
+                    "offline_critic_warmup_metrics": warmup_metrics,
+                },
+                indent=2,
+            )
+        )
+        return
 
     actor_group = actor_worker_cls.create_group(cfg).launch(
         cluster, name=cfg.actor.group_name, placement_strategy=actor_placement

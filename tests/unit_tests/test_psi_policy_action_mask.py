@@ -199,6 +199,21 @@ def test_preprocess_env_obs_keeps_images_in_zero_one_and_pads_history():
     )
 
 
+def test_move_obs_dict_to_encoder_device_matches_encoder_dtype():
+    policy = _make_minimal_policy()
+    policy.obs_encoder = nn.Linear(1, 1, bias=False).to(dtype=torch.bfloat16)
+
+    moved = policy._move_obs_dict_to_encoder_device(
+        {
+            "rgb_head": torch.zeros(1, 1, 3, 4, 4, dtype=torch.float32),
+            "right_arm_states": torch.zeros(1, 1, 7, dtype=torch.float32),
+        }
+    )
+
+    assert moved["rgb_head"].dtype == torch.bfloat16
+    assert moved["right_arm_states"].dtype == torch.bfloat16
+
+
 def test_predict_action_batch_stores_full_chunk_actions_and_zero_noise_logprobs():
     cfg = PsiPolicyConfig(action_horizon=4, num_action_chunks=2)
     policy = _make_minimal_policy(cfg)

@@ -29,6 +29,10 @@ from rlinf.workers.actor.fsdp_sac_policy_worker import EmbodiedSACFSDPPolicy
 class AsyncEmbodiedSACFSDPPolicy(EmbodiedSACFSDPPolicy):
     should_stop = False
 
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.should_stop = False
+
     async def recv_rollout_trajectories(self, input_channel):
         if getattr(self, "_recv_queue", None) is None:
             self._recv_queue = queue.Queue()
@@ -68,17 +72,7 @@ class AsyncEmbodiedSACFSDPPolicy(EmbodiedSACFSDPPolicy):
         if not recv_list:
             return
 
-        self.replay_buffer.add_trajectories(recv_list)
-
-        if self.demo_buffer is not None:
-            intervene_traj_list = []
-            for traj in recv_list:
-                intervene_trajs = traj.extract_intervene_traj()
-                if intervene_trajs is not None:
-                    intervene_traj_list.extend(intervene_trajs)
-
-            if len(intervene_traj_list) > 0:
-                self.demo_buffer.add_trajectories(intervene_traj_list)
+        self._add_received_trajectories_to_buffers(recv_list)
 
     async def _wait_for_replay_buffer_ready(self, min_buffer_size: int):
         while True:
@@ -92,34 +86,24 @@ class AsyncEmbodiedSACFSDPPolicy(EmbodiedSACFSDPPolicy):
     @Worker.timer("run_training")
     async def run_training(self):
         """SAC training using replay buffer"""
-        if self.cfg.actor.get("enable_offload", False):
-            self.load_param_and_grad(self.device)
-            self.load_optimizer(self.device)
-
         # Check if replay buffer has enough samples
         min_buffer_size = self.cfg.algorithm.replay_buffer.get("min_buffer_size", 100)
         await self._wait_for_replay_buffer_ready(min_buffer_size)
 
+        if not self._prepare_training_loop():
+            return {}
+
+        train_actor_steps = self.cfg.algorithm.get("train_actor_steps", 0)
+        train_actor_steps = max(min_buffer_size, train_actor_steps)
+        train_actor = self.replay_buffer.is_ready(train_actor_steps)
+
         torch.distributed.barrier()
-
-        assert (
-            self.cfg.actor.global_batch_size
-            % (self.cfg.actor.micro_batch_size * self._world_size)
-            == 0
-        )
-        self.gradient_accumulation = (
-            self.cfg.actor.global_batch_size
-            // self.cfg.actor.micro_batch_size
-            // self._world_size
-        )
-
-        self.model.train()
         metrics = {}
 
         update_epoch = self.cfg.algorithm.get("update_epoch", 1)
         for _ in range(update_epoch):
             await asyncio.sleep(0)
-            metrics_data = self.update_one_epoch()
+            metrics_data = self.update_one_epoch(train_actor=train_actor)
             append_to_dict(metrics, metrics_data)
             self.update_step += 1
 
@@ -132,7 +116,13 @@ class AsyncEmbodiedSACFSDPPolicy(EmbodiedSACFSDPPolicy):
 
     async def stop(self):
         self.should_stop = True
-        self.buffer_dataset.close()
         recv_thread = getattr(self, "_recv_rollout_thread", None)
         if recv_thread is not None and recv_thread.is_alive():
             await asyncio.to_thread(recv_thread.join, 5)
+        self._drain_received_trajectories()
+        if getattr(self, "buffer_dataset", None) is not None:
+            self.buffer_dataset.close()
+        if getattr(self, "replay_buffer", None) is not None:
+            self.replay_buffer.close(wait=True)
+        if getattr(self, "demo_buffer", None) is not None:
+            self.demo_buffer.close(wait=True)

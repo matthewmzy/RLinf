@@ -17,9 +17,9 @@ add_q_head: True
 num_q_heads: 2
 q_hidden_dims: [256, 256, 256]
 
-# Exploration noise (same principle as FlowPolicy SAC)
-noise_std_train: 0.3
-noise_std_rollout: 0.02
+# Exploration noise (keep A2D real-robot startup conservative by default)
+noise_std_train: 0.05
+noise_std_rollout: 0.005
 
 # RL action mask:
 # - enabled=False: all 26 action dims participate in SAC exploration and learning
@@ -46,6 +46,7 @@ state_split:
   right_hand: [20, 26]
 
 precision: "bfloat16"
+train_obs_encoder: False   # safer default for real-robot SAC: freeze 3-view vision encoder online
 
 is_lora: False
 lora_rank: 32

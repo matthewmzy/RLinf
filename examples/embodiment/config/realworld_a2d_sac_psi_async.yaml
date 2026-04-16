@@ -44,7 +44,7 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "a2d_sac_psi_policy"
+    experiment_name: "a2d_sac_psi_policy_async"
     logger_backends: ["tensorboard"]
 
   max_epochs: 8000
@@ -52,15 +52,9 @@ runner:
   only_eval: False
   val_check_interval: -1
   save_interval: -1
+  weight_sync_interval: 1
   resume_dir: null
-  # Warm-start weights loaded before online SAC starts.
-  # For psi-policy SAC this file is not "actor only":
-  # it contains the whole PsiPolicyForRL state_dict, including obs_encoder,
-  # action model, and the SAC q_head warmed up by offline IQL.
   ckpt_path: /home/psibot/workspace_zhiyuan/RLinf/results/a2d_iql_20260414/critic_warmstart_v08_latest_u1000_b16/actor_model_state_dict.pt
-  # Optional: let the online runner do an extra offline critic warmup phase by itself
-  # before touching the real robot. We already have an exported IQL warm-start ckpt above,
-  # so keep these disabled unless you want to run that stage again inside RLinf.
   offline_critic_warmup_updates: 0
   offline_critic_warmup_save_dir: null
   offline_critic_warmup_micro_batch_size: 32
@@ -75,6 +69,9 @@ algorithm:
 
   rollout_epoch: 1
   eval_rollout_epoch: 1
+  # Franka-style async: do not stall rollout waiting for learner/version catch-up.
+  # Use an override like `algorithm.staleness_threshold=1` to restore conservative gating.
+  staleness_threshold: null
 
   adv_type: embodied_sac
   loss_type: embodied_sac
@@ -86,7 +83,7 @@ algorithm:
   entropy_tuning:
     alpha_type: softplus
     initial_alpha: 0.01
-    target_entropy: auto    # use -num_active_rl_action_dims
+    target_entropy: auto
     optim:
       lr: 3.0e-4
       lr_scheduler: torch_constant
@@ -95,21 +92,25 @@ algorithm:
   critic_actor_ratio: 4
   train_actor_steps: 20
   replay_buffer:
-    enable_cache: False      # Real-robot RGB trajectories are too large to keep flattened in RAM.
-    cache_size: 200          # Ignored when enable_cache=False; kept for quick local experiments.
+    enable_cache: False
+    cache_size: 200
     min_buffer_size: 2
     sample_window_size: 200
-    auto_save: True          # Persist trajectories to disk so sampling can load them on demand.
-    enable_preload: True     # Prefetch replay/demo batches in a background thread while the robot is rolling out.
-    prefetch_size: 4         # Keep a few ready-to-train batches so SAC does not pause as long between episodes.
+    auto_save: True
+    enable_preload: True
+    prefetch_size: 4
     load_path: null
   demo_buffer:
-    enable_cache: False      # Intervention demos include full image trajectories; avoid RAM blow-ups.
-    cache_size: 200          # Ignored when enable_cache=False.
+    enable_cache: False
+    cache_size: 200
     min_buffer_size: 1
     sample_window_size: 200
-    auto_save: True          # Keep full intervention trajectories on disk instead of caching in memory.
+    auto_save: True
     allow_replay_only_until_ready: True
+    # demo_buffer.load_path expects a converted RLinf replay-buffer checkpoint,
+    # not the raw cut zarr directly. Raw source demo for conversion:
+    # /home/psibot/workspace_zhiyuan/psi-policy/data/bj01-dc09_20260409_22_cut.zarr
+    load_path: null
 
   target_update_freq: 1
 
@@ -122,7 +123,7 @@ algorithm:
     repetition_penalty: 1.0
 
   length_params:
-    max_new_token: 26       # action_dim
+    max_new_token: 26
     max_length: 1024
     min_length: 1
 
@@ -139,7 +140,7 @@ env:
       controller_port: 12321
       container_name: null
       auto_start_server: False
-      task_name: "A2D psi-policy SAC fine-tuning"
+      task_name: "A2D psi-policy SAC async fine-tuning"
       step_frequency: 10.0
       max_num_steps: 96
       reset_on_env_reset: True
@@ -154,7 +155,7 @@ env:
           0.2494447380, 0.0009070295, 0.0032560034, 0.0135472994, 0.9290074110, 0.9444035888,
           0.0000000000, 0.0018140590, 0.0822954923, 0.0947613269, 0.9975231886, 0.9968835711,
         ]
-      reset_move_timeout_s: 12.0
+      reset_move_timeout_s: 3.0
       reset_tolerance: 0.03
       model_control_modes: [0]
       teleop_control_modes: [1]
@@ -190,7 +191,7 @@ env:
           1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
           1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         ]
-    max_steps_per_rollout_epoch: 96  # chunk-aligned for 8-step psi-policy execution
+    max_steps_per_rollout_epoch: 96
     max_episode_steps: 96
 
   eval:
@@ -198,7 +199,7 @@ env:
     keyboard_reward_wrapper: single_stage
     override_cfg:
       is_dummy: False
-      task_name: "A2D psi-policy SAC evaluation"
+      task_name: "A2D psi-policy SAC async evaluation"
       step_frequency: 10.0
       max_num_steps: 96
       reset_on_env_reset: True
@@ -214,7 +215,7 @@ env:
           0.9290074110, 0.9444035888, 0.0000000000, 0.0018140590, 0.0822954923, 0.0947613269,
           0.9975231886, 0.9968835711,
         ]
-      reset_move_timeout_s: 12.0
+      reset_move_timeout_s: 3.0
       reset_tolerance: 0.03
       model_control_modes: [0]
       teleop_control_modes: [1]
@@ -250,7 +251,7 @@ env:
           1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
           1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         ]
-    max_steps_per_rollout_epoch: 96  # chunk-aligned for 8-step psi-policy execution
+    max_steps_per_rollout_epoch: 96
     max_episode_steps: 96
 
 rollout:
@@ -258,6 +259,7 @@ rollout:
   backend: "huggingface"
   enable_offload: False
   pipeline_stage_num: 1
+  sync_weight_nccl_max_ctas: 32
 
   collect_transitions: True
   collect_prev_infos: False
@@ -273,13 +275,13 @@ rollout:
   enable_cuda_graph: False
 
 actor:
+  sync_weight_no_wait: True
+  recv_drain_max_trajectories: 32
   group_name: "ActorGroup"
   training_backend: "fsdp"
 
-  # 3-view psi-policy + target critic on a single 4090 will OOM easily at 256.
-  # Keep online SAC conservative by default; increase only after verifying memory headroom.
-  micro_batch_size: 8
-  global_batch_size: 8
+  micro_batch_size: 32
+  global_batch_size: 32
   seed: 1234
   enable_offload: False
 
@@ -287,22 +289,16 @@ actor:
     model_path: "/home/psibot/workspace_zhiyuan/psi-policy/data/outputs/2026.04.10/04.54_zjxc_v0.8_vit-small_rgb-state/checkpoints/latest.ckpt"
     normalizer_path: "/home/psibot/workspace_zhiyuan/psi-policy/data/outputs/2026.04.10/04.54_zjxc_v0.8_vit-small_rgb-state/normalizer.pkl"
     action_dim: 26
-    num_action_chunks: 8  # match psi-policy client execute_step
+    num_action_chunks: 8
     num_q_heads: 2
     precision: bf16
-    train_obs_encoder: False  # freeze visual encoder online; only update downstream policy/q heads
+    train_obs_encoder: False
     noise_std_train: 0.05
     noise_std_rollout: 0.005
-    # Examples:
-    # 1) learn all dims: keep rl_action_mask.enabled = False
-    # 2) only learn both arms:
-    #    rl_action_mask: {enabled: True, active_groups: ["arms"], active_indices: []}
-    # 3) only learn a few hand joints:
-    #    rl_action_mask: {enabled: True, active_groups: [], active_indices: [14, 15, 20, 21]}
 
   optim:
     clip_grad: 10.0
-    lr: 3e-5              # lower lr for pretrained model
+    lr: 3e-5
     lr_scheduler: torch_constant
 
   critic_optim:
@@ -323,10 +319,4 @@ reward:
   use_reward_model: False
 
 critic:
-  # Keep False for psi-policy SAC.
-  # Meaning:
-  # - False: use the q_head attached inside actor.model (PsiPolicyForRL) as the SAC critic.
-  # - True: expect a separate standalone critic model pipeline.
-  # This A2D config uses the first design, so the critic already lives inside actor.model
-  # and is warm-started from runner.ckpt_path.
   use_critic_model: False

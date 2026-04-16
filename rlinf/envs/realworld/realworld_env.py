@@ -230,6 +230,11 @@ class RealWorldEnv(gym.Env):
             self._reset_metrics()
         return extracted_obs, infos
 
+    def clear_pending_keyboard_events(self) -> None:
+        for env in getattr(self.env, "envs", []):
+            if hasattr(env, "clear_pending_keyboard_events"):
+                env.clear_pending_keyboard_events()
+
     def _wrap_obs(self, raw_obs):
         """
         raw_obs: Dict of list
@@ -280,7 +285,13 @@ class RealWorldEnv(gym.Env):
             for env_id in range(self.num_envs):
                 if infos["intervene_action"][env_id] is not None:
                     intervene_flag[env_id] = True
-        episode_intervened = self.intervened_once | intervene_flag
+        data_valid = np.ones(self.num_envs, dtype=bool)
+        if "data_valid" in infos:
+            data_valid = np.asarray(infos["data_valid"], dtype=bool).copy()
+        # Treat the idle handoff window as "intervention has started" so real-robot
+        # episodes are not cut in the middle of a human takeover sequence.
+        human_takeover_active = intervene_flag | ~data_valid
+        episode_intervened = self.intervened_once | human_takeover_active
         # Once a human takes over an episode, do not truncate it for max-step limits.
         max_step_truncations = np.asarray(
             (self.elapsed_steps >= self.cfg.max_episode_steps) & ~episode_intervened,
@@ -301,9 +312,6 @@ class RealWorldEnv(gym.Env):
         infos["success"] = success_flags
         infos["fail"] = fail_flags
         infos["timeout_fail"] = timeout_fail
-        data_valid = np.ones(self.num_envs, dtype=bool)
-        if "data_valid" in infos:
-            data_valid = np.asarray(infos["data_valid"], dtype=bool).copy()
 
         infos = self._record_metrics(step_reward, terminations, intervene_flag, infos)
         if self.ignore_terminations:
@@ -319,6 +327,7 @@ class RealWorldEnv(gym.Env):
         infos["intervene_action"] = to_tensor(intervene_action)
         infos["intervene_flag"] = to_tensor(intervene_flag)
         infos["data_valid"] = to_tensor(data_valid)
+        infos["episode_intervened"] = to_tensor(episode_intervened)
         infos["success"] = to_tensor(success_flags)
         infos["fail"] = to_tensor(fail_flags)
         infos["timeout_fail"] = to_tensor(timeout_fail)
@@ -333,6 +342,7 @@ class RealWorldEnv(gym.Env):
                 "intervene_action",
                 "intervene_flag",
                 "data_valid",
+                "episode_intervened",
                 "success",
                 "fail",
                 "timeout_fail",
@@ -439,7 +449,12 @@ class RealWorldEnv(gym.Env):
             reset_obs, reset_infos = self._handle_auto_reset(
                 past_dones.cpu().numpy(), obs_list[-1], infos_list[-1]
             )
-            for key in ("intervene_action", "intervene_flag", "data_valid"):
+            for key in (
+                "intervene_action",
+                "intervene_flag",
+                "data_valid",
+                "episode_intervened",
+            ):
                 if key in infos_last:
                     reset_infos[key] = infos_last[key]
             obs_list[-1], infos_list[-1] = reset_obs, reset_infos

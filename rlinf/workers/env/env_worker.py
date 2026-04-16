@@ -90,11 +90,19 @@ class EnvWorker(Worker):
     def _should_stop_rollout_after_step(
         self, env_output: EnvOutput, chunk_step_idx: int
     ) -> bool:
-        if chunk_step_idx == self.n_train_chunk_steps - 1:
+        if self.stop_rollout_on_episode_end and bool(
+            env_output.dones is not None and env_output.dones.any()
+        ):
             return True
-        if not self.stop_rollout_on_episode_end:
+        if chunk_step_idx < self.n_train_chunk_steps - 1:
             return False
-        return bool(env_output.dones is not None and env_output.dones.any())
+        if env_output.episode_intervened is not None and bool(
+            env_output.episode_intervened.any()
+        ):
+            # Keep collecting until the intervened real-robot episode truly ends,
+            # instead of cutting it at the nominal rollout-epoch boundary.
+            return False
+        return True
 
     def init_worker(self):
         self.dst_ranks = {
@@ -269,6 +277,11 @@ class EnvWorker(Worker):
             if self.enable_offload and hasattr(self.env_list[i], "offload"):
                 self.env_list[i].offload()
 
+    def _clear_pending_env_inputs(self) -> None:
+        for env in self.env_list:
+            if hasattr(env, "clear_pending_keyboard_events"):
+                env.clear_pending_keyboard_events()
+
     @Worker.timer("env_interact_step")
     def env_interact_step(
         self, chunk_actions: torch.Tensor, stage_id: int
@@ -333,6 +346,9 @@ class EnvWorker(Worker):
             intervene_actions=intervene_actions,
             intervene_flags=intervene_flags,
             transition_valids=infos["data_valid"] if "data_valid" in infos else None,
+            episode_intervened=infos["episode_intervened"]
+            if "episode_intervened" in infos
+            else None,
         )
         return env_output, env_info
 
@@ -693,6 +709,7 @@ class EnvWorker(Worker):
         env_metrics = defaultdict(list)
 
         for epoch in range(self.rollout_epoch):
+            self._clear_pending_env_inputs()
             env_outputs = self.bootstrap_step()
             for stage_id in range(self.stage_num):
                 env_output: EnvOutput = env_outputs[stage_id]
@@ -707,7 +724,8 @@ class EnvWorker(Worker):
                 )
 
             should_stop_epoch = False
-            for chunk_step_idx in range(self.n_train_chunk_steps):
+            chunk_step_idx = 0
+            while True:
                 for stage_id in range(self.stage_num):
                     if cooperative_yield:
                         await asyncio.sleep(0)
@@ -780,6 +798,7 @@ class EnvWorker(Worker):
 
                 if should_stop_epoch:
                     break
+                chunk_step_idx += 1
 
             for stage_id in range(self.stage_num):
                 env_output = env_outputs[stage_id]

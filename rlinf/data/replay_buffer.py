@@ -19,7 +19,7 @@ import os
 import pickle as pkl
 import shutil
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Optional
 
 import numpy as np
@@ -271,6 +271,7 @@ class TrajectoryReplayBuffer:
             assert auto_save_path != "", (
                 "auto_save_path is required when auto_save is enabled"
             )
+            auto_save_path = os.path.abspath(auto_save_path)
             self.logger.info(
                 f"Created replay buffer with auto_save_path: {auto_save_path}"
             )
@@ -308,6 +309,8 @@ class TrajectoryReplayBuffer:
         self._index_lock = threading.Lock()
         self._future_lock = threading.Lock()
         self._pending_save_futures = []
+        self._trajectory_save_futures: dict[int, Future] = {}
+        self._pending_flat_trajectories: dict[int, dict] = {}
 
         # Cached window metadata for faster sampling
         self._window_cache_size = None
@@ -333,17 +336,36 @@ class TrajectoryReplayBuffer:
         self.random_generator = torch.Generator()
         self.random_generator.manual_seed(seed)
 
-    def _track_save_future(self, future):
+    def _track_save_future(self, future, trajectory_id: Optional[int] = None):
         with self._future_lock:
             self._pending_save_futures.append(future)
+            if trajectory_id is not None:
+                self._trajectory_save_futures[trajectory_id] = future
 
         def _cleanup(done_future):
             with self._future_lock:
                 if done_future in self._pending_save_futures:
                     self._pending_save_futures.remove(done_future)
+                if (
+                    trajectory_id is not None
+                    and self._trajectory_save_futures.get(trajectory_id) is done_future
+                ):
+                    self._trajectory_save_futures.pop(trajectory_id, None)
+                    self._pending_flat_trajectories.pop(trajectory_id, None)
 
         future.add_done_callback(_cleanup)
         return future
+
+    def _wait_for_trajectory_save(self, trajectory_id: int) -> None:
+        future = None
+        with self._future_lock:
+            future = self._trajectory_save_futures.get(trajectory_id)
+        if future is not None:
+            future.result()
+
+    def _get_pending_flat_trajectory(self, trajectory_id: int) -> Optional[dict]:
+        with self._future_lock:
+            return self._pending_flat_trajectories.get(trajectory_id)
 
     def _get_trajectory_path(
         self,
@@ -426,6 +448,9 @@ class TrajectoryReplayBuffer:
 
         trajectory_info = self._trajectory_index[trajectory_id]
 
+        if self.auto_save:
+            self._wait_for_trajectory_save(trajectory_id)
+
         trajectory_path = self._get_trajectory_path(
             trajectory_id,
             model_weights_id,
@@ -467,6 +492,7 @@ class TrajectoryReplayBuffer:
         for trajectory in trajectories:
             model_weights_id = trajectory.model_weights_id
             trajectory_id = self._trajectory_counter
+            flat_trajectory = None
 
             # Calculate total samples: T * B
             if trajectory.prev_logprobs is not None:
@@ -480,8 +506,14 @@ class TrajectoryReplayBuffer:
             else:
                 continue  # Skip empty trajectories
 
+            if self._flat_trajectory_cache is not None or self.auto_save:
+                flat_trajectory = self._flatten_trajectory(trajectory)
+
             # Save trajectory to disk if enabled
             if self.auto_save:
+                with self._future_lock:
+                    if flat_trajectory is not None:
+                        self._pending_flat_trajectories[trajectory_id] = flat_trajectory
                 # Save asynchronously to reduce I/O stalls
                 save_futures.append(
                     self._track_save_future(
@@ -490,7 +522,8 @@ class TrajectoryReplayBuffer:
                             trajectory,
                             trajectory_id,
                             model_weights_id,
-                        )
+                        ),
+                        trajectory_id=trajectory_id,
                     )
                 )
                 self._trajectory_file_path[trajectory_id] = self.auto_save_path
@@ -513,10 +546,10 @@ class TrajectoryReplayBuffer:
                 self._total_samples += num_samples
                 self._index_version += 1
 
-            if self._flat_trajectory_cache is not None:
+            if self._flat_trajectory_cache is not None and flat_trajectory is not None:
                 self._flat_trajectory_cache.put(
                     trajectory_id,
-                    self._flatten_trajectory(trajectory),
+                    flat_trajectory,
                 )
 
         # Save metadata/index after all trajectory saves finish
@@ -705,9 +738,11 @@ class TrajectoryReplayBuffer:
             traj_offsets: dict[int, int] = {}
             cursor = 0
             for tid in miss_traj_ids:
-                model_weights_id = self._trajectory_index[tid]["model_weights_id"]
-                trajectory = self._load_trajectory(tid, model_weights_id)
-                flat_trajectory = self._flatten_trajectory(trajectory)
+                flat_trajectory = self._get_pending_flat_trajectory(tid)
+                if flat_trajectory is None:
+                    model_weights_id = self._trajectory_index[tid]["model_weights_id"]
+                    trajectory = self._load_trajectory(tid, model_weights_id)
+                    flat_trajectory = self._flatten_trajectory(trajectory)
                 miss_flats.append(flat_trajectory)
                 traj_offsets[tid] = cursor
                 cursor += self._trajectory_index[tid]["num_samples"]
@@ -935,6 +970,9 @@ class TrajectoryReplayBuffer:
         self._trajectory_index.clear()
         self._trajectory_id_list.clear()
         self._trajectory_file_path.clear()
+        with self._future_lock:
+            self._trajectory_save_futures.clear()
+            self._pending_flat_trajectories.clear()
 
         # Clear cache
         if self._flat_trajectory_cache is not None:

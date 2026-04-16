@@ -66,6 +66,7 @@ class EnvOutput:
     intervene_actions: Optional[torch.Tensor] = None  # [B]
     intervene_flags: Optional[torch.Tensor] = None  # [B]
     transition_valids: Optional[torch.Tensor] = None  # [B]
+    episode_intervened: Optional[torch.Tensor] = None  # [B]
 
     def __post_init__(self):
         self.obs = put_tensor_device(self.obs, "cpu")
@@ -81,6 +82,7 @@ class EnvOutput:
         self.intervene_actions = _to_cpu_tensor(self.intervene_actions)
         self.intervene_flags = _to_cpu_tensor(self.intervene_flags)
         self.transition_valids = _to_cpu_tensor(self.transition_valids)
+        self.episode_intervened = _to_cpu_tensor(self.episode_intervened)
         if self.transition_valids is not None and self.transition_valids.dim() == 1:
             self.transition_valids = self.transition_valids.unsqueeze(-1)
 
@@ -254,6 +256,7 @@ class EnvOutput:
         env_output_dict["intervene_actions"] = self.intervene_actions
         env_output_dict["intervene_flags"] = self.intervene_flags
         env_output_dict["transition_valids"] = self.transition_valids
+        env_output_dict["episode_intervened"] = self.episode_intervened
 
         return env_output_dict
 

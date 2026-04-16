@@ -17,12 +17,17 @@ from collections import deque
 
 
 class KeyboardListener:
-    def __init__(self):
+    def __init__(self, allowed_keys: set[str] | None = None):
         from pynput import keyboard
 
         self.state_lock = threading.Lock()
         self._pressed_keys = set()
         self._pending_keys = deque()
+        self._allowed_keys = (
+            {str(key).lower() for key in allowed_keys}
+            if allowed_keys is not None
+            else None
+        )
 
         self.listener = keyboard.Listener(
             on_press=self.on_key_press, on_release=self.on_key_release
@@ -37,6 +42,8 @@ class KeyboardListener:
 
     def on_key_press(self, key):
         normalized_key = self._normalize_key(key)
+        if self._allowed_keys is not None and normalized_key not in self._allowed_keys:
+            return
         with self.state_lock:
             if normalized_key in self._pressed_keys:
                 return
@@ -54,3 +61,8 @@ class KeyboardListener:
             if not self._pending_keys:
                 return None
             return self._pending_keys.popleft()
+
+    def clear_pending_keys(self) -> None:
+        with self.state_lock:
+            self._pending_keys.clear()
+            self._pressed_keys.clear()
