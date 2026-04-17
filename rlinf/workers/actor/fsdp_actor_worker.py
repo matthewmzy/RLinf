@@ -1053,10 +1053,47 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             model = super().model_provider_func()
 
         if self.cfg.runner.get("ckpt_path", None):
-            model_dict = torch.load(self.cfg.runner.ckpt_path)
-            model.load_state_dict(model_dict)
+            self._load_runner_warmstart_state_dict(model)
 
         return model
+
+    def _load_runner_warmstart_state_dict(self, model: nn.Module) -> None:
+        ckpt_path = self.cfg.runner.ckpt_path
+        model_dict = torch.load(ckpt_path, map_location="cpu")
+        current_state_dict = model.state_dict()
+
+        unexpected_keys = sorted(set(model_dict.keys()) - set(current_state_dict.keys()))
+        missing_keys = sorted(set(current_state_dict.keys()) - set(model_dict.keys()))
+        mismatched_keys = []
+        for key in sorted(set(model_dict.keys()) & set(current_state_dict.keys())):
+            if current_state_dict[key].shape != model_dict[key].shape:
+                mismatched_keys.append(
+                    (key, tuple(model_dict[key].shape), tuple(current_state_dict[key].shape))
+                )
+
+        if unexpected_keys or missing_keys or mismatched_keys:
+            message_lines = [
+                f"Warmstart checkpoint is incompatible with current model: {ckpt_path}",
+            ]
+            if mismatched_keys:
+                message_lines.append(
+                    f"shape mismatches ({len(mismatched_keys)}): "
+                    + "; ".join(
+                        f"{key}: ckpt={old_shape}, current={new_shape}"
+                        for key, old_shape, new_shape in mismatched_keys[:10]
+                    )
+                )
+            if unexpected_keys:
+                message_lines.append(
+                    f"unexpected keys ({len(unexpected_keys)}): {unexpected_keys[:10]}"
+                )
+            if missing_keys:
+                message_lines.append(
+                    f"missing keys ({len(missing_keys)}): {missing_keys[:10]}"
+                )
+            raise RuntimeError("\n".join(message_lines))
+
+        model.load_state_dict(model_dict, strict=True)
 
     def sync_model_to_rollout(self) -> None:
         """

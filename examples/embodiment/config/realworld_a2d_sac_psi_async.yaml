@@ -54,7 +54,7 @@ runner:
   save_interval: -1
   weight_sync_interval: 1
   resume_dir: null
-  ckpt_path: /home/psibot/workspace_zhiyuan/RLinf/results/a2d_iql_20260414/critic_warmstart_v08_latest_u1000_b16/actor_model_state_dict.pt
+  ckpt_path: /home/psibot/workspace_zhiyuan/RLinf/results/a2d_iql_20260417/critic_warmstart_chunk4_v08_latest_u1000_b16/actor_model_state_dict.pt
   offline_critic_warmup_updates: 0
   offline_critic_warmup_save_dir: null
   offline_critic_warmup_micro_batch_size: 32
@@ -289,7 +289,8 @@ actor:
     model_path: "/home/psibot/workspace_zhiyuan/psi-policy/data/outputs/2026.04.10/04.54_zjxc_v0.8_vit-small_rgb-state/checkpoints/latest.ckpt"
     normalizer_path: "/home/psibot/workspace_zhiyuan/psi-policy/data/outputs/2026.04.10/04.54_zjxc_v0.8_vit-small_rgb-state/normalizer.pkl"
     action_dim: 26
-    num_action_chunks: 8
+    num_action_chunks: 4
+    use_chunk_rl: True
     num_q_heads: 2
     precision: bf16
     train_obs_encoder: False

@@ -86,6 +86,7 @@ class PsiPolicyConfig:
     noise_std_train: float = 0.05
     noise_std_rollout: float = 0.005
     num_action_chunks: int = 4
+    use_chunk_rl: bool = False
 
     image_size: int = 224
     obs_horizon: int = 1
@@ -127,6 +128,7 @@ class PsiPolicyConfig:
         self.action_dim = int(self.action_dim)
         self.action_horizon = int(self.action_horizon)
         self.num_action_chunks = int(self.num_action_chunks)
+        self.use_chunk_rl = bool(self.use_chunk_rl)
         self.num_q_heads = int(self.num_q_heads)
         self.obs_horizon = int(self.obs_horizon)
         self.fallback_hidden_size = int(self.fallback_hidden_size)
@@ -405,6 +407,9 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         self.register_buffer("rl_action_mask", rl_action_mask, persistent=False)
         self.active_rl_action_indices = active_rl_action_indices
         self.active_rl_action_dim = len(active_rl_action_indices)
+        self.sac_action_feature_dim = self.action_dim * (
+            self.cfg.num_action_chunks if self.cfg.use_chunk_rl else 1
+        )
 
         obs_shape, _ = self.obs_encoder.output_shape()
         self.n_emb = int(obs_shape[-1])
@@ -412,7 +417,7 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         if cfg.add_q_head:
             self.q_head = MultiQHead(
                 hidden_size=self.n_emb,
-                action_feature_dim=self.action_dim,
+                action_feature_dim=self.sac_action_feature_dim,
                 hidden_dims=cfg.q_hidden_dims,
                 num_q_heads=cfg.num_q_heads,
             )
@@ -434,6 +439,13 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             "PsiPolicyForRL obs_encoder training is %s.",
             "enabled" if self.cfg.train_obs_encoder else "disabled (frozen)",
         )
+        if self.cfg.use_chunk_rl:
+            logger.info(
+                "PsiPolicyForRL SAC chunk-RL enabled: critic_action_dim=%s (%s x %s).",
+                self.sac_action_feature_dim,
+                self.cfg.num_action_chunks,
+                self.action_dim,
+            )
 
     @property
     def num_action_chunks(self):
@@ -470,7 +482,10 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         }
 
     def get_sac_target_entropy(self) -> float:
-        return -float(self.active_rl_action_dim)
+        entropy_dim = self.active_rl_action_dim
+        if self.cfg.use_chunk_rl:
+            entropy_dim *= self.cfg.num_action_chunks
+        return -float(entropy_dim)
 
     def _build_or_load_policy(self) -> PsiPolicy:
         if self.cfg.model_path:
@@ -686,6 +701,46 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
     def _flatten_chunk_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
         return tensor.reshape(tensor.shape[0], -1).contiguous()
 
+    def _reshape_actions_for_q_head(self, actions: torch.Tensor) -> torch.Tensor:
+        if actions.dim() == 3:
+            if actions.shape[-1] != self.action_dim:
+                raise ValueError(
+                    f"psi-policy critic expects action dim {self.action_dim}, got {tuple(actions.shape)}."
+                )
+            if self.cfg.use_chunk_rl:
+                if actions.shape[1] < self.cfg.num_action_chunks:
+                    raise ValueError(
+                        f"psi-policy chunk RL expects at least {self.cfg.num_action_chunks} chunks, "
+                        f"got {tuple(actions.shape)}."
+                    )
+                return self._flatten_chunk_tensor(actions[:, : self.cfg.num_action_chunks, :])
+            return actions[:, 0, :].contiguous()
+
+        if actions.dim() != 2:
+            raise ValueError(
+                f"psi-policy critic expects 2D or 3D action tensors, got {tuple(actions.shape)}."
+            )
+
+        if self.cfg.use_chunk_rl:
+            expected_dim = self.cfg.num_action_chunks * self.action_dim
+            if actions.shape[-1] != expected_dim:
+                raise ValueError(
+                    f"psi-policy chunk RL expects flattened action dim {expected_dim}, "
+                    f"got {tuple(actions.shape)}."
+                )
+            return actions.contiguous()
+
+        if actions.shape[-1] == self.action_dim:
+            return actions.contiguous()
+
+        if actions.shape[-1] % self.action_dim == 0:
+            reshaped = actions.reshape(actions.shape[0], -1, self.action_dim)
+            return reshaped[:, 0, :].contiguous()
+
+        raise ValueError(
+            f"psi-policy critic cannot reshape actions with shape {tuple(actions.shape)}."
+        )
+
     def _compute_chunk_logprobs(
         self,
         action_chunks_mean_norm: torch.Tensor,
@@ -888,9 +943,25 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
     def sac_forward(self, obs, raw_obs=None, **kwargs):
         del kwargs
         cond_tokens, obs_feature = self.encode_obs(obs)
-        action_chunks_mean_norm = self._sample_action_chunks(cond_tokens, training=True)
-        action_mean_norm = action_chunks_mean_norm[:, 0, :]
+        num_chunks = self.cfg.num_action_chunks if self.cfg.use_chunk_rl else 1
+        action_chunks_mean_norm = self._sample_action_chunks(
+            cond_tokens, training=True
+        )[:, :num_chunks, :]
         noise_std = self.cfg.noise_std_train
+        if self.cfg.use_chunk_rl:
+            action_chunks_norm = self._sample_masked_action_chunks(
+                action_chunks_mean_norm, noise_std
+            )
+            action_chunks = self.normalizer["action"].unnormalize(action_chunks_norm)
+            action_chunks = self._apply_reset_pose_mask(action_chunks, raw_obs)
+            log_prob = self._compute_chunk_logprobs(
+                action_chunks_mean_norm,
+                action_chunks_norm,
+                noise_std,
+            ).sum(dim=-1)
+            return self._flatten_chunk_tensor(action_chunks), log_prob, obs_feature
+
+        action_mean_norm = action_chunks_mean_norm[:, 0, :]
         _, action_norm_for_q, log_prob = self._sample_masked_action(
             action_mean_norm, noise_std
         )
@@ -908,7 +979,7 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             _, obs_feature = self.encode_obs(obs, detach_encoder=detach_encoder)
         else:
             obs_feature = shared_feature.detach() if detach_encoder else shared_feature
-        return self.q_head(obs_feature, actions)
+        return self.q_head(obs_feature, self._reshape_actions_for_q_head(actions))
 
     def default_forward(
         self,

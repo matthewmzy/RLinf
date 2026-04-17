@@ -75,6 +75,12 @@ def parse_args() -> argparse.Namespace:
         help="Replay-buffer seed written into metadata.",
     )
     parser.add_argument(
+        "--action-chunk-size",
+        type=int,
+        default=1,
+        help="Pack contiguous action steps into macro-action chunks of this size.",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Delete an existing output directory before writing.",
@@ -225,6 +231,7 @@ def _build_trajectory(
     *,
     model_weights_id: str,
     success_reward: float,
+    action_chunk_size: int,
 ) -> Trajectory:
     traj_len = end - start
     if traj_len <= 0:
@@ -252,38 +259,119 @@ def _build_trajectory(
     next_main_images = _shift_episode_tensor(main_images)
     next_extra_view_images = _shift_episode_tensor(extra_view_images)
 
-    rewards = np.zeros((traj_len, 1), dtype=np.float32)
-    rewards[-1, 0] = success_reward
-    terminations = np.zeros((traj_len, 1), dtype=bool)
-    terminations[-1, 0] = True
-    truncations = np.zeros((traj_len, 1), dtype=bool)
-    dones = terminations.copy()
-    transition_valids = np.ones((traj_len, 1), dtype=bool)
+    rewards_per_step = np.zeros((traj_len,), dtype=np.float32)
+    rewards_per_step[-1] = success_reward
+    terminations_per_step = np.zeros((traj_len,), dtype=bool)
+    terminations_per_step[-1] = True
+    truncations_per_step = np.zeros((traj_len,), dtype=bool)
+    dones_per_step = terminations_per_step.copy()
+
+    if action_chunk_size <= 1:
+        rewards = rewards_per_step[:, None]
+        terminations = terminations_per_step[:, None]
+        truncations = truncations_per_step[:, None]
+        dones = dones_per_step[:, None]
+        transition_valids = np.ones((traj_len, 1), dtype=bool)
+        packed_actions = actions
+        curr_main_images = main_images
+        curr_extra_view_images = extra_view_images
+        curr_states = states
+        packed_next_main_images = next_main_images
+        packed_next_extra_view_images = next_extra_view_images
+        packed_next_states = next_states
+    else:
+        num_chunks = (traj_len + action_chunk_size - 1) // action_chunk_size
+        action_dim = int(actions.shape[-1])
+        packed_actions = np.zeros(
+            (num_chunks, action_chunk_size * action_dim), dtype=np.float32
+        )
+        rewards = np.zeros((num_chunks, action_chunk_size), dtype=np.float32)
+        terminations = np.zeros((num_chunks, action_chunk_size), dtype=bool)
+        truncations = np.zeros((num_chunks, action_chunk_size), dtype=bool)
+        dones = np.zeros((num_chunks, action_chunk_size), dtype=bool)
+        transition_valids = np.zeros((num_chunks, action_chunk_size), dtype=bool)
+        curr_main_images = np.zeros((num_chunks, *main_images.shape[1:]), dtype=main_images.dtype)
+        curr_extra_view_images = np.zeros(
+            (num_chunks, *extra_view_images.shape[1:]), dtype=extra_view_images.dtype
+        )
+        curr_states = np.zeros((num_chunks, states.shape[-1]), dtype=np.float32)
+        packed_next_main_images = np.zeros(
+            (num_chunks, *next_main_images.shape[1:]), dtype=next_main_images.dtype
+        )
+        packed_next_extra_view_images = np.zeros(
+            (num_chunks, *next_extra_view_images.shape[1:]),
+            dtype=next_extra_view_images.dtype,
+        )
+        packed_next_states = np.zeros((num_chunks, next_states.shape[-1]), dtype=np.float32)
+
+        for chunk_idx in range(num_chunks):
+            chunk_start = chunk_idx * action_chunk_size
+            chunk_end = min(chunk_start + action_chunk_size, traj_len)
+            valid_count = chunk_end - chunk_start
+            last_valid_idx = chunk_end - 1
+
+            transition_valids[chunk_idx, :valid_count] = True
+            rewards[chunk_idx, :valid_count] = rewards_per_step[chunk_start:chunk_end]
+            terminations[chunk_idx, :valid_count] = terminations_per_step[chunk_start:chunk_end]
+            truncations[chunk_idx, :valid_count] = truncations_per_step[chunk_start:chunk_end]
+            dones[chunk_idx, :valid_count] = dones_per_step[chunk_start:chunk_end]
+            packed_actions[chunk_idx, : valid_count * action_dim] = actions[
+                chunk_start:chunk_end
+            ].reshape(-1)
+
+            curr_main_images[chunk_idx] = main_images[chunk_start]
+            curr_extra_view_images[chunk_idx] = extra_view_images[chunk_start]
+            curr_states[chunk_idx] = states[chunk_start]
+            packed_next_main_images[chunk_idx] = next_main_images[last_valid_idx]
+            packed_next_extra_view_images[chunk_idx] = next_extra_view_images[last_valid_idx]
+            packed_next_states[chunk_idx] = next_states[last_valid_idx]
 
     return Trajectory(
         max_episode_length=traj_len,
         model_weights_id=model_weights_id,
-        actions=torch.from_numpy(actions).unsqueeze(1),
-        transition_valids=torch.from_numpy(transition_valids),
-        rewards=torch.from_numpy(rewards),
-        terminations=torch.from_numpy(terminations),
-        truncations=torch.from_numpy(truncations),
-        dones=torch.from_numpy(dones),
+        actions=torch.from_numpy(packed_actions).unsqueeze(1),
+        transition_valids=(
+            torch.from_numpy(transition_valids).unsqueeze(1)
+            if action_chunk_size > 1
+            else torch.from_numpy(transition_valids)
+        ),
+        rewards=(
+            torch.from_numpy(rewards).unsqueeze(1)
+            if action_chunk_size > 1
+            else torch.from_numpy(rewards)
+        ),
+        terminations=(
+            torch.from_numpy(terminations).unsqueeze(1)
+            if action_chunk_size > 1
+            else torch.from_numpy(terminations)
+        ),
+        truncations=(
+            torch.from_numpy(truncations).unsqueeze(1)
+            if action_chunk_size > 1
+            else torch.from_numpy(truncations)
+        ),
+        dones=(
+            torch.from_numpy(dones).unsqueeze(1)
+            if action_chunk_size > 1
+            else torch.from_numpy(dones)
+        ),
         curr_obs={
-            "main_images": torch.from_numpy(main_images).unsqueeze(1),
-            "extra_view_images": torch.from_numpy(extra_view_images).unsqueeze(1),
-            "states": torch.from_numpy(states).unsqueeze(1),
+            "main_images": torch.from_numpy(curr_main_images).unsqueeze(1),
+            "extra_view_images": torch.from_numpy(curr_extra_view_images).unsqueeze(1),
+            "states": torch.from_numpy(curr_states).unsqueeze(1),
         },
         next_obs={
-            "main_images": torch.from_numpy(next_main_images).unsqueeze(1),
-            "extra_view_images": torch.from_numpy(next_extra_view_images).unsqueeze(1),
-            "states": torch.from_numpy(next_states).unsqueeze(1),
+            "main_images": torch.from_numpy(packed_next_main_images).unsqueeze(1),
+            "extra_view_images": torch.from_numpy(packed_next_extra_view_images).unsqueeze(1),
+            "states": torch.from_numpy(packed_next_states).unsqueeze(1),
         },
     )
 
 
 def main() -> None:
     args = parse_args()
+    if args.action_chunk_size < 1:
+        raise ValueError("--action-chunk-size must be >= 1.")
     zarr_paths = _expand_zarr_paths(args.zarr_path)
     output_dir = args.output_dir.expanduser().resolve()
 
@@ -339,6 +427,7 @@ def main() -> None:
                 end_idx,
                 model_weights_id=args.model_weights_id,
                 success_reward=args.success_reward,
+                action_chunk_size=args.action_chunk_size,
             )
             total_steps += trajectory.max_episode_length
             converted_episodes += 1

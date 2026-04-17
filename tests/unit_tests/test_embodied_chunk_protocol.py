@@ -96,6 +96,65 @@ def test_extract_valid_traj_splits_chunked_transition_mask():
     )
 
 
+def test_extract_valid_chunk_traj_keeps_macro_actions_and_drops_non_prefix_masks():
+    trajectory = Trajectory(
+        max_episode_length=12,
+        model_weights_id="weights-chunk-1",
+        actions=torch.tensor(
+            [
+                [[10.0, 11.0, 20.0, 21.0, 30.0, 31.0]],
+                [[40.0, 41.0, 50.0, 51.0, 60.0, 61.0]],
+                [[70.0, 71.0, 80.0, 81.0, 90.0, 91.0]],
+            ]
+        ),
+        intervene_flags=torch.zeros((3, 1, 6), dtype=torch.bool),
+        transition_valids=torch.tensor(
+            [
+                [[True, True, True]],
+                [[True, True, False]],
+                [[True, False, True]],
+            ],
+            dtype=torch.bool,
+        ),
+        rewards=torch.tensor(
+            [
+                [[1.0, 2.0, 3.0]],
+                [[4.0, 5.0, 0.0]],
+                [[6.0, 0.0, 7.0]],
+            ]
+        ),
+        curr_obs={
+            "states": torch.tensor([[[100.0, 101.0]], [[200.0, 201.0]], [[300.0, 301.0]]]),
+        },
+        next_obs={
+            "states": torch.tensor([[[110.0, 111.0]], [[210.0, 211.0]], [[310.0, 311.0]]]),
+        },
+    )
+
+    extracted = trajectory.extract_valid_chunk_traj()
+
+    assert extracted is not None
+    assert len(extracted) == 1
+    valid_traj = extracted[0]
+    assert torch.equal(
+        valid_traj.actions[:, 0],
+        torch.tensor(
+            [
+                [10.0, 11.0, 20.0, 21.0, 30.0, 31.0],
+                [40.0, 41.0, 50.0, 51.0, 60.0, 61.0],
+            ]
+        ),
+    )
+    assert torch.equal(
+        valid_traj.transition_valids[:, 0],
+        torch.tensor([[True, True, True], [True, True, False]], dtype=torch.bool),
+    )
+    assert torch.equal(
+        valid_traj.curr_obs["states"][:, 0],
+        torch.tensor([[100.0, 101.0], [200.0, 201.0]]),
+    )
+
+
 def test_extract_intervene_traj_splits_chunked_intervention_mask():
     trajectory = Trajectory(
         max_episode_length=8,

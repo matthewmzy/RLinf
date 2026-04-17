@@ -751,6 +751,113 @@ class Trajectory:
 
         return filtered_trajectories if filtered_trajectories else None
 
+    def _extract_chunk_level_trajs(
+        self,
+        mask: torch.Tensor,
+        *,
+        require_valid_prefix: bool,
+    ) -> list["Trajectory"] | None:
+        mask = self._normalize_chunk_mask(mask)
+        traj_len, batch_size, num_chunks = mask.shape
+
+        chunk_keep = mask.any(dim=-1)
+        if require_valid_prefix:
+            valid_counts = mask.to(dtype=torch.long).sum(dim=-1)
+            prefix_pattern = (
+                torch.arange(num_chunks, device=mask.device).view(1, 1, -1)
+                < valid_counts.unsqueeze(-1)
+            )
+            chunk_keep = chunk_keep & (mask == prefix_pattern).all(dim=-1)
+
+        if (~chunk_keep).all():
+            return None
+
+        def align(
+            tensor: torch.Tensor | None, field_name: str
+        ) -> torch.Tensor | None:
+            return self._align_field_with_traj_len(tensor, traj_len, field_name)
+
+        actions = align(self.actions, "actions")
+        intervene_flags = align(self.intervene_flags, "intervene_flags")
+        transition_valids = align(self.transition_valids, "transition_valids")
+        rewards = align(self.rewards, "rewards")
+        prev_logprobs = align(self.prev_logprobs, "prev_logprobs")
+        prev_values = align(self.prev_values, "prev_values")
+        versions = align(self.versions, "versions")
+        terminations = align(self.terminations, "terminations")
+        truncations = align(self.truncations, "truncations")
+        dones = align(self.dones, "dones")
+
+        forward_inputs = (
+            {
+                key: align(value, f"forward_inputs.{key}")
+                for key, value in self.forward_inputs.items()
+            }
+            if self.forward_inputs
+            else {}
+        )
+        curr_obs = (
+            {
+                key: align(value, f"curr_obs.{key}")
+                for key, value in self.curr_obs.items()
+            }
+            if self.curr_obs
+            else {}
+        )
+        next_obs = (
+            {
+                key: align(value, f"next_obs.{key}")
+                for key, value in self.next_obs.items()
+            }
+            if self.next_obs
+            else {}
+        )
+
+        def select(tensor: torch.Tensor | None, batch_idx: int) -> torch.Tensor | None:
+            if tensor is None:
+                return None
+            selected = tensor[:, batch_idx]
+            selected = selected[chunk_keep[:, batch_idx]]
+            return selected.unsqueeze(1)
+
+        def select_dict(
+            data: dict[str, torch.Tensor], batch_idx: int
+        ) -> dict[str, torch.Tensor]:
+            if not data:
+                return {}
+            return {
+                key: select(value, batch_idx)
+                for key, value in data.items()
+                if value is not None
+            }
+
+        filtered_trajectories = []
+        for batch_idx in range(batch_size):
+            if not chunk_keep[:, batch_idx].any():
+                continue
+
+            filtered_trajectories.append(
+                Trajectory(
+                    max_episode_length=self.max_episode_length,
+                    model_weights_id=self.model_weights_id,
+                    actions=select(actions, batch_idx),
+                    intervene_flags=select(intervene_flags, batch_idx),
+                    transition_valids=select(transition_valids, batch_idx),
+                    rewards=select(rewards, batch_idx),
+                    terminations=select(terminations, batch_idx),
+                    truncations=select(truncations, batch_idx),
+                    dones=select(dones, batch_idx),
+                    prev_logprobs=select(prev_logprobs, batch_idx),
+                    prev_values=select(prev_values, batch_idx),
+                    versions=select(versions, batch_idx),
+                    forward_inputs=select_dict(forward_inputs, batch_idx),
+                    curr_obs=select_dict(curr_obs, batch_idx),
+                    next_obs=select_dict(next_obs, batch_idx),
+                )
+            )
+
+        return filtered_trajectories if filtered_trajectories else None
+
     def extract_intervene_traj(self, mode="any"):
         if self.intervene_flags is None or (~self.intervene_flags).all():
             return None
@@ -802,6 +909,22 @@ class Trajectory:
         if mask.shape[-1] == 1 and mask.all():
             return [self]
         return self._extract_action_level_trajs(mask)
+
+    def extract_valid_chunk_traj(
+        self, require_valid_prefix: bool = True
+    ) -> list["Trajectory"] | None:
+        if self.transition_valids is None:
+            return [self]
+
+        mask = self._normalize_chunk_mask(self.transition_valids)
+        if (~mask).all():
+            return None
+        if mask.shape[-1] == 1 and mask.all():
+            return [self]
+        return self._extract_chunk_level_trajs(
+            mask,
+            require_valid_prefix=require_valid_prefix,
+        )
 
 
 @dataclass(kw_only=True)

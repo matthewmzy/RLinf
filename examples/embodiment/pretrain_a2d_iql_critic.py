@@ -287,6 +287,9 @@ def main() -> None:
 
     gamma = float(args.gamma if args.gamma is not None else cfg.algorithm.gamma)
     device = resolve_device(args.device)
+    use_chunk_rl = bool(cfg.actor.model.get("use_chunk_rl", False))
+    num_action_chunks = int(cfg.actor.model.get("num_action_chunks", 1))
+    bootstrap_discount = gamma**num_action_chunks if use_chunk_rl else gamma
 
     if device.type == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -364,9 +367,12 @@ def main() -> None:
         "weight_decay": args.weight_decay,
         "grad_clip": args.grad_clip,
         "gamma": gamma,
+        "bootstrap_discount": bootstrap_discount,
         "expectile": args.expectile,
         "value_loss_weight": args.value_loss_weight,
         "train_encoder": args.train_encoder,
+        "use_chunk_rl": use_chunk_rl,
+        "num_action_chunks": num_action_chunks,
         "dataset_stats": dataset_stats,
     }
     save_json(run_config, output_dir / "run_config.json")
@@ -381,8 +387,18 @@ def main() -> None:
             batch = replay_buffer.sample(args.batch_size)
             batch = put_tensor_device(batch, device=device)
             actions = batch["actions"].to(dtype=torch.float32)
-            rewards = batch["rewards"].to(dtype=torch.float32).reshape(-1, 1)
-            terminations = batch["terminations"].to(dtype=torch.float32).reshape(-1, 1)
+            rewards = batch["rewards"].to(dtype=torch.float32)
+            terminations = batch["terminations"].to(dtype=torch.float32)
+
+            if rewards.dim() == 1:
+                rewards = rewards.unsqueeze(-1)
+            if terminations.dim() == 1:
+                terminations = terminations.unsqueeze(-1)
+
+            rewards_for_target = rewards.sum(dim=-1, keepdim=True)
+            terminal_mask = terminations.bool().any(dim=-1, keepdim=True).to(
+                dtype=torch.float32
+            )
 
             optimizer.zero_grad(set_to_none=True)
 
@@ -395,12 +411,17 @@ def main() -> None:
                 with torch.no_grad():
                     _, next_features = model.encode_obs(next_obs, detach_encoder=True)
 
-                q_values = model.q_head(curr_features, actions)
+                q_values = model.q_head(
+                    curr_features,
+                    model._reshape_actions_for_q_head(actions),
+                )
                 min_q = torch.min(q_values.detach(), dim=-1, keepdim=True).values
                 v_values = value_head(curr_features)
                 with torch.no_grad():
                     next_v = value_head(next_features)
-                    q_target = rewards + (1.0 - terminations) * gamma * next_v
+                    q_target = rewards_for_target + (
+                        1.0 - terminal_mask
+                    ) * bootstrap_discount * next_v
 
                 q_loss = F.mse_loss(q_values, q_target.expand_as(q_values))
                 value_loss = expectile_regression_loss(
@@ -421,8 +442,8 @@ def main() -> None:
                 "q_target_mean": scalar_metric(q_target.mean()),
                 "v_mean": scalar_metric(v_values.mean()),
                 "adv_mean": scalar_metric((min_q - v_values).mean()),
-                "reward_mean": scalar_metric(rewards.mean()),
-                "terminal_fraction": scalar_metric(terminations.mean()),
+                "reward_mean": scalar_metric(rewards_for_target.mean()),
+                "terminal_fraction": scalar_metric(terminal_mask.mean()),
                 "grad_norm": scalar_metric(grad_norm),
                 "elapsed_sec": time.time() - start_time,
             }

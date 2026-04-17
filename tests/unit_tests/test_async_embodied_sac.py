@@ -67,6 +67,35 @@ def test_received_trajectory_helper_keeps_full_valid_intervened_demo():
     assert torch.equal(demo_traj.rewards, replay_traj.rewards)
 
 
+def test_received_trajectory_helper_keeps_chunk_trajectory_for_chunk_rl():
+    worker = object.__new__(EmbodiedSACFSDPPolicy)
+    worker.replay_buffer = _RecordingBuffer()
+    worker.demo_buffer = _RecordingBuffer()
+    worker.use_chunk_rl = True
+
+    trajectory = Trajectory(
+        max_episode_length=8,
+        model_weights_id="weights-chunk-1",
+        actions=torch.tensor([[[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]]]),
+        intervene_flags=torch.tensor(
+            [[[False, False, False, False, True, True]]], dtype=torch.bool
+        ),
+        transition_valids=torch.tensor([[[True, True, False]]], dtype=torch.bool),
+        rewards=torch.tensor([[[1.0, 2.0, 0.0]]]),
+    )
+
+    EmbodiedSACFSDPPolicy._add_received_trajectories_to_buffers(worker, [trajectory])
+
+    assert len(worker.replay_buffer.trajectories) == 1
+    replay_traj = worker.replay_buffer.trajectories[0]
+    assert torch.equal(replay_traj.actions, trajectory.actions)
+    assert torch.equal(replay_traj.transition_valids, trajectory.transition_valids)
+
+    assert len(worker.demo_buffer.trajectories) == 1
+    demo_traj = worker.demo_buffer.trajectories[0]
+    assert torch.equal(demo_traj.actions, trajectory.actions)
+
+
 def test_async_sac_run_training_respects_train_actor_steps(monkeypatch):
     worker = object.__new__(AsyncEmbodiedSACFSDPPolicy)
     worker._timer_metrics = {}

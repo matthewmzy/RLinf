@@ -33,6 +33,7 @@ rl_action_mask:
 
 # Action chunking (execute 4 of 16 predicted steps)
 num_action_chunks: 4
+use_chunk_rl: False
 
 # Image preprocessing
 image_size: 224

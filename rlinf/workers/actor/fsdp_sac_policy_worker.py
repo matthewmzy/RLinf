@@ -61,6 +61,7 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
         self.update_step = 0
         self.enable_drq = bool(getattr(self.cfg.actor, "enable_drq", False))
         self._cached_rl_action_mask = None
+        self.use_chunk_rl = False
         self.dashboard_telemetry = DashboardTelemetry()
 
     def init_worker(self):
@@ -110,6 +111,9 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             self.target_model_initialized = True
 
         self.use_dsrl = self.cfg.actor.model.get("openpi", {}).get("use_dsrl", False)
+        self.use_chunk_rl = bool(self.cfg.actor.model.get("use_chunk_rl", False))
+        if self.use_dsrl and self.use_chunk_rl:
+            raise ValueError("use_dsrl and use_chunk_rl cannot both be enabled.")
         use_dsrl = self.use_dsrl
         if use_dsrl:
             # DSRL: separate actor/critic encoders into different optimizer groups
@@ -379,9 +383,13 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
         self, recv_list: list[Trajectory]
     ) -> None:
         replay_traj_list = []
+        use_chunk_rl = getattr(self, "use_chunk_rl", False)
         for traj in recv_list:
             assert isinstance(traj, Trajectory)
-            valid_trajs = traj.extract_valid_traj()
+            if use_chunk_rl:
+                valid_trajs = traj.extract_valid_chunk_traj()
+            else:
+                valid_trajs = traj.extract_valid_traj()
             if valid_trajs is not None:
                 replay_traj_list.extend(valid_trajs)
 
@@ -489,10 +497,17 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             return actions
 
         action_dim = int(self.cfg.actor.model.action_dim)
-        if actions.shape[-1] != action_dim:
+        reshape_back = False
+        if actions.shape[-1] == action_dim:
+            projected_actions = actions.unsqueeze(1) if actions.dim() == 2 else actions
+            reshape_back = actions.dim() == 2
+        elif actions.shape[-1] % action_dim == 0:
+            projected_actions = actions.reshape(*actions.shape[:-1], -1, action_dim)
+            reshape_back = True
+        else:
             raise ValueError(
-                f"Expected actions.shape[-1] == {action_dim} for rl_action_mask, "
-                f"got {actions.shape[-1]}."
+                f"Expected actions last dim to equal {action_dim} or a multiple of it for "
+                f"rl_action_mask, got {actions.shape[-1]}."
             )
 
         reset_states = obs.get("reset_states")
@@ -506,9 +521,15 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
         reset_action = reset_states[..., :action_dim].to(
             device=actions.device, dtype=actions.dtype
         )
-        while reset_action.dim() < actions.dim():
-            reset_action = reset_action.unsqueeze(1)
-        return actions * rl_action_mask + reset_action * (1.0 - rl_action_mask)
+        while reset_action.dim() < projected_actions.dim():
+            reset_action = reset_action.unsqueeze(-2)
+        projected_actions = (
+            projected_actions * rl_action_mask
+            + reset_action * (1.0 - rl_action_mask)
+        )
+        if reshape_back:
+            return projected_actions.reshape(*actions.shape[:-1], -1)
+        return projected_actions
 
     @Worker.timer("forward_critic")
     def forward_critic(self, batch):
@@ -516,10 +537,17 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
         bootstrap_type = self.cfg.algorithm.get("bootstrap_type", "standard")
         agg_q = self.cfg.algorithm.get("agg_q", "min")
         use_dsrl = self.cfg.actor.model.get("openpi", {}).get("use_dsrl", False)
+        use_chunk_rl = getattr(self, "use_chunk_rl", False)
         if use_dsrl:
             num_action_chunks = self.cfg.actor.model.get("num_action_chunks", 1)
             discount = self.cfg.algorithm.gamma**num_action_chunks
             rewards_for_bootstrap = batch["rewards"][:, 0:1].to(self.torch_dtype)
+        elif use_chunk_rl:
+            num_action_chunks = self.cfg.actor.model.get("num_action_chunks", 1)
+            discount = self.cfg.algorithm.gamma**num_action_chunks
+            rewards_for_bootstrap = (
+                batch["rewards"].sum(dim=-1, keepdim=True).to(self.torch_dtype)
+            )
         else:
             discount = self.cfg.algorithm.gamma
             rewards_for_bootstrap = (
