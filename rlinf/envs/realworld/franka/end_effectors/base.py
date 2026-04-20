@@ -24,7 +24,6 @@ class EndEffectorType(str, Enum):
     """Supported end-effector types for the Franka robot arm."""
 
     FRANKA_GRIPPER = "franka_gripper"
-    AOYI_HAND = "aoyi_hand"
     RUIYAN_HAND = "ruiyan_hand"
 
 

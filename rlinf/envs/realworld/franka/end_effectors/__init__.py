@@ -25,7 +25,7 @@ def create_end_effector(
 
     Args:
         end_effector_type: The type of end-effector to create.
-            One of ``"franka_gripper"``, ``"aoyi_hand"``, or ``"ruiyan_hand"``.
+            One of ``"franka_gripper"`` or ``"ruiyan_hand"``.
         **kwargs: Additional keyword arguments forwarded to the end-effector
             constructor.
 
@@ -42,10 +42,6 @@ def create_end_effector(
         from .franka_gripper import FrankaGripper
 
         return FrankaGripper(**kwargs)
-    elif end_effector_type == EndEffectorType.AOYI_HAND:
-        from .aoyi_hand import AoyiHand
-
-        return AoyiHand(**kwargs)
     elif end_effector_type == EndEffectorType.RUIYAN_HAND:
         from .ruiyan_hand import RuiyanHand
 

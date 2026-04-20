@@ -6,8 +6,8 @@ Real-World RL with Franka + Dexterous Hand
    :height: 16px
    :class: inline-icon
 
-This document describes how to set up **dexterous hand end-effectors**
-(Aoyi Hand, Ruiyan Hand) on a Franka arm within the RLinf framework,
+This document describes how to set up a **dexterous hand end-effector**
+(Ruiyan Hand) on a Franka arm within the RLinf framework,
 use **data glove + SpaceMouse** teleoperation for data collection and
 human intervention during training, and train a **visual reward classifier**
 for automated success/failure judgment in dexterous manipulation tasks.
@@ -30,7 +30,7 @@ integration, the action space expands to **12 dimensions**
 **Key Features:**
 
 1. **End-effector abstraction layer** — A unified ``EndEffector`` interface
-   that allows switching between Franka gripper, Aoyi Hand, and Ruiyan Hand
+   that allows switching between the Franka gripper and Ruiyan Hand
    via a single configuration field.
 2. **Glove teleoperation** — ``GloveExpert`` reads 6-DOF finger angles
    from a PSI data glove, combined with ``SpaceMouseExpert`` to form
@@ -72,8 +72,7 @@ Hardware Setup
 In addition to the standard hardware listed in :doc:`franka`, the
 dexterous hand setup requires:
 
-- **Dexterous hand** — Aoyi Hand (Modbus RTU serial) or Ruiyan Hand
-  (custom serial protocol)
+- **Dexterous hand** — Ruiyan Hand (custom serial protocol)
 - **Data glove** — PSI data glove, USB serial connection (typically
   mounted as ``/dev/ttyACM0``)
 
@@ -83,7 +82,7 @@ Controller Node Connections
 The following hardware should be connected to the controller node:
 
 1. **Franka arm** — Ethernet
-2. **Dexterous hand** — USB serial (Aoyi: Modbus, Ruiyan: custom protocol)
+2. **Dexterous hand** — USB serial (Ruiyan: custom protocol)
 3. **SpaceMouse** — USB
 4. **Data glove** — USB serial
 5. **RealSense camera** — USB
@@ -129,14 +128,13 @@ following in the virtual environment on the controller node:
    # Dexterous hand + data glove drivers (includes all serial deps)
    pip install "RLinf-dexterous-hands[all]"
 
-``RLinf-dexterous-hands`` bundles drivers for the Ruiyan hand, Aoyi hand, and
+``RLinf-dexterous-hands`` bundles drivers for the Ruiyan hand and
 PSI data glove, along with the required serial libraries (pyserial,
 pymodbus, pyyaml, etc.). For finer-grained control over optional
 dependencies:
 
 - ``pip install RLinf-dexterous-hands`` — base only (pyserial + numpy)
 - ``pip install "RLinf-dexterous-hands[glove]"`` — adds data glove deps (pyyaml)
-- ``pip install "RLinf-dexterous-hands[aoyi]"`` — adds Aoyi hand deps (pymodbus)
 - ``pip install "RLinf-dexterous-hands[all]"`` — all dependencies
 
 Training / Rollout Node
@@ -190,7 +188,7 @@ Set environment variables and run the diagnostic script:
 .. code-block:: bash
 
    export FRANKA_ROBOT_IP=<your_robot_ip>
-   export FRANKA_END_EFFECTOR_TYPE=ruiyan_hand  # or aoyi_hand
+   export FRANKA_END_EFFECTOR_TYPE=ruiyan_hand
    export FRANKA_HAND_PORT=/dev/ttyUSB0
    python -m toolkits.realworld_check.test_franka_controller
 
@@ -293,7 +291,7 @@ arm and the data glove controls the fingers.
          frequency: 30                       # glove polling frequency (Hz)
        override_cfg:
          target_ee_pose: [0.8188, 0.1384, 0.1188, -3.1331, -1.1213, -0.0676]
-         end_effector_type: "ruiyan_hand"    # or aoyi_hand
+         end_effector_type: "ruiyan_hand"
          end_effector_config:
            port: "/dev/ttyUSB0"              # dexterous hand serial port
            baudrate: 460800
@@ -309,7 +307,7 @@ arm and the data glove controls the fingers.
 Key fields:
 
 - ``target_ee_pose`` — Target arm TCP pose (obtain via ``test_controller``'s ``getpos_euler``)
-- ``end_effector_type`` — Dexterous hand type: ``ruiyan_hand`` or ``aoyi_hand``
+- ``end_effector_type`` — Dexterous hand type: ``ruiyan_hand``
 - ``hand_reset_state`` — Finger pose to reset to at the start of each episode (6-D, ``[0, 1]``)
 - ``hand_target_state`` — Target finger pose for reward computation
 - ``default_velocity`` / ``default_current`` — Motor speed and current limits
@@ -379,20 +377,6 @@ Configuration files typically consist of a main YAML config and an
      hand_action_scale: 1.0
      target_ee_pose: [0.8188, 0.1384, 0.1188, -3.1331, -1.1213, -0.0676]
      joint_reset_qpos: [0, 0, 0, -1.9, 0, 2, 0]
-
-**Full Aoyi Hand configuration:**
-
-.. code-block:: yaml
-
-   override_cfg:
-     end_effector_type: "aoyi_hand"
-     end_effector_config:
-       port: "/dev/ttyUSB0"
-       node_id: 2
-       baudrate: 115200
-     hand_reset_state: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-     hand_target_state: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-     hand_action_scale: 1.0
 
 **Glove configuration** (under ``env.eval`` or ``env.train``):
 
@@ -989,7 +973,6 @@ All end-effectors implement a unified ``EndEffector`` abstract base class:
 
    class EndEffectorType(str, Enum):
        FRANKA_GRIPPER = "franka_gripper"   # 7-D actions
-       AOYI_HAND      = "aoyi_hand"        # 12-D actions
        RUIYAN_HAND    = "ruiyan_hand"      # 12-D actions
 
 The factory function ``create_end_effector(end_effector_type, **kwargs)``
@@ -998,7 +981,6 @@ creates the appropriate instance. After switching the end-effector,
 
 **Supported dexterous hands:**
 
-- **Aoyi Hand** — Modbus RTU serial, 6 DOF, ``[0, 1]`` continuous control
 - **Ruiyan Hand** — Custom serial protocol, 6 DOF, ``[0, 1]`` continuous control
 
 Teleoperation Architecture

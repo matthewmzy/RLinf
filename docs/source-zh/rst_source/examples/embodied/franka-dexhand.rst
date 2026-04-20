@@ -7,7 +7,7 @@ Franka + 灵巧手真机强化学习
    :class: inline-icon
 
 本文档介绍如何在 RLinf 框架中为 Franka 机械臂配置 **灵巧手末端执行器**
-（傲意手、睿研手），使用 **数据手套 + 空间鼠标** 进行遥操作数据采集和人类干预训练，
+（睿研手），使用 **数据手套 + 空间鼠标** 进行遥操作数据采集和人类干预训练，
 以及如何通过 **视觉奖励分类器** 为灵巧手任务提供自动化的成功/失败判定。
 
 如果你还没有阅读基础的 Franka 真机环境搭建指南，请先参考 :doc:`franka`。
@@ -25,8 +25,8 @@ Franka + 灵巧手真机强化学习
 
 **主要功能：**
 
-1. **末端执行器抽象层** — 统一的 ``EndEffector`` 接口，支持在 Franka 夹爪、
-   傲意灵巧手、睿研灵巧手之间通过配置文件一键切换。
+1. **末端执行器抽象层** — 统一的 ``EndEffector`` 接口，支持在 Franka 夹爪
+   和睿研灵巧手之间通过配置文件一键切换。
 2. **数据手套遥操作** — ``GloveExpert`` 读取 PSI 数据手套的 6 维手指角度，
    与 ``SpaceMouseExpert`` 组合形成 12 维人类专家动作。
 3. **灵巧手干预包装器** — ``DexHandIntervention`` 自动替换
@@ -58,7 +58,7 @@ Franka + 灵巧手真机强化学习
 
 除 :doc:`franka` 中列出的标准硬件外，灵巧手场景还需要以下额外组件：
 
-- **灵巧手** — 傲意灵巧手（Modbus RTU 串口）或 睿研灵巧手（自定义串口协议）
+- **灵巧手** — 睿研灵巧手（自定义串口协议）
 - **数据手套** — PSI 数据手套，USB 串口连接（通常挂载为 ``/dev/ttyACM0``）
 
 控制节点硬件连接
@@ -67,7 +67,7 @@ Franka + 灵巧手真机强化学习
 在控制节点上需要连接以下硬件：
 
 1. **Franka 机械臂** — 通过以太网连接
-2. **灵巧手** — 通过 USB 串口连接（傲意：Modbus，睿研：自定义协议）
+2. **灵巧手** — 通过 USB 串口连接（睿研：自定义协议）
 3. **空间鼠标（SpaceMouse）** — USB 连接
 4. **数据手套** — USB 串口连接
 5. **Realsense 相机** — USB 连接
@@ -111,13 +111,12 @@ Franka + 灵巧手真机强化学习
    # 灵巧手 + 数据手套驱动（包含串口通信等全部依赖）
    pip install "RLinf-dexterous-hands[all]" -i https://pypi.org/simple
 
-``RLinf-dexterous-hands`` 包含睿研灵巧手、傲意灵巧手和 PSI 数据手套的驱动，
+``RLinf-dexterous-hands`` 包含睿研灵巧手和 PSI 数据手套的驱动，
 以及所需的串口通信库（pyserial、pymodbus、pyyaml 等）。
 如果只需要部分组件，可以使用更细粒度的可选依赖：
 
 - ``pip install RLinf-dexterous-hands`` — 基础（仅 pyserial + numpy）
 - ``pip install "RLinf-dexterous-hands[glove]"`` — 加装数据手套依赖（pyyaml）
-- ``pip install "RLinf-dexterous-hands[aoyi]"`` — 加装傲意灵巧手依赖（pymodbus）
 - ``pip install "RLinf-dexterous-hands[all]"`` — 全部依赖
 
 训练 / Rollout 节点
@@ -167,7 +166,7 @@ Franka + 灵巧手真机强化学习
 .. code-block:: bash
 
    export FRANKA_ROBOT_IP=<your_robot_ip>
-   export FRANKA_END_EFFECTOR_TYPE=ruiyan_hand  # 或 aoyi_hand
+   export FRANKA_END_EFFECTOR_TYPE=ruiyan_hand
    export FRANKA_HAND_PORT=/dev/ttyUSB0
    python -m toolkits.realworld_check.test_franka_controller
 
@@ -265,7 +264,7 @@ Franka + 灵巧手真机强化学习
          frequency: 30                       # 手套轮询频率 (Hz)
        override_cfg:
          target_ee_pose: [0.8188, 0.1384, 0.1188, -3.1331, -1.1213, -0.0676]
-         end_effector_type: "ruiyan_hand"    # 或 aoyi_hand
+         end_effector_type: "ruiyan_hand"
          end_effector_config:
            port: "/dev/ttyUSB0"              # 灵巧手串口
            baudrate: 460800
@@ -281,7 +280,7 @@ Franka + 灵巧手真机强化学习
 其中各字段含义：
 
 - ``target_ee_pose`` — 机械臂目标 TCP 位姿（通过 ``test_controller`` 的 ``getpos_euler`` 获取）
-- ``end_effector_type`` — 灵巧手类型，``ruiyan_hand`` 或 ``aoyi_hand``
+- ``end_effector_type`` — 灵巧手类型，``ruiyan_hand``
 - ``hand_reset_state`` — 每个 episode 开始时手指复位到的位姿（6 维，``[0, 1]``）
 - ``hand_target_state`` — 奖励计算用的目标手指位姿
 - ``default_velocity`` / ``default_current`` — 灵巧手电机速度和电流限制
@@ -345,20 +344,6 @@ Franka + 灵巧手真机强化学习
      hand_action_scale: 1.0
      target_ee_pose: [0.8188, 0.1384, 0.1188, -3.1331, -1.1213, -0.0676]
      joint_reset_qpos: [0, 0, 0, -1.9, 0, 2, 0]
-
-**傲意手完整配置示例：**
-
-.. code-block:: yaml
-
-   override_cfg:
-     end_effector_type: "aoyi_hand"
-     end_effector_config:
-       port: "/dev/ttyUSB0"
-       node_id: 2
-       baudrate: 115200
-     hand_reset_state: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-     hand_target_state: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-     hand_action_scale: 1.0
 
 **手套配置** （在 ``env.eval`` 或 ``env.train`` 中）：
 
@@ -919,7 +904,6 @@ demo 采集流程中：
 
    class EndEffectorType(str, Enum):
        FRANKA_GRIPPER = "franka_gripper"   # 7 维动作
-       AOYI_HAND      = "aoyi_hand"        # 12 维动作
        RUIYAN_HAND    = "ruiyan_hand"      # 12 维动作
 
 工厂函数 ``create_end_effector(end_effector_type, **kwargs)`` 根据类型字符串
@@ -927,7 +911,6 @@ demo 采集流程中：
 
 **支持的灵巧手：**
 
-- **傲意灵巧手** — Modbus RTU 串口协议，6 DOF，``[0, 1]`` 连续控制
 - **睿研灵巧手** — 自定义串口协议，6 DOF，``[0, 1]`` 连续控制
 
 遥操作架构

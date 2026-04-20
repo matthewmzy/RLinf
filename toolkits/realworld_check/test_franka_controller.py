@@ -18,7 +18,7 @@ Environment variables
 ---------------------
 FRANKA_ROBOT_IP          Robot arm IP (required).
 FRANKA_END_EFFECTOR_TYPE End-effector type: ``franka_gripper`` (default),
-                         ``aoyi_hand``, or ``ruiyan_hand``.
+                         or ``ruiyan_hand``.
 FRANKA_HAND_PORT         Serial port for the dexterous hand
                          (default ``/dev/ttyUSB0``).
 FRANKA_HAND_BAUDRATE     Baudrate for the dexterous hand
@@ -178,10 +178,9 @@ def main():
 
     # Build end-effector config for dexterous hands
     end_effector_config = {}
-    if end_effector_type in ("aoyi_hand", "ruiyan_hand"):
+    if end_effector_type == "ruiyan_hand":
         end_effector_config["port"] = hand_port
-        if end_effector_type == "ruiyan_hand":
-            end_effector_config["baudrate"] = hand_baudrate
+        end_effector_config["baudrate"] = hand_baudrate
 
     print(f"{_BOLD}Starting FrankaController ...{_RESET}")
     print(f"  Robot IP:        {robot_ip}")

@@ -113,7 +113,7 @@ class FrankaRobotConfig:
     )
 
     # -- End-effector selection -------------------------------------------
-    # One of "franka_gripper", "aoyi_hand", "ruiyan_hand".
+    # One of "franka_gripper" or "ruiyan_hand".
     end_effector_type: str = "franka_gripper"
     # Extra kwargs forwarded to the end-effector constructor.
     end_effector_config: dict = field(default_factory=dict)
