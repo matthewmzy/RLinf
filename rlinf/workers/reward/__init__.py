@@ -1,4 +1,4 @@
-# Copyright 2026 The RLinf Authors.
+# Copyright 2025 The RLinf Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,14 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Reward workers for RLinf."""
+
 from rlinf.workers.reward.classifier_reward_server import ClassifierRewardServer
 from rlinf.workers.reward.classifier_reward_worker import (
     ClassifierRewardServerWorker,
     launch_classifier_reward_server,
 )
+from rlinf.workers.reward.reward_worker import (
+    EmbodiedRewardWorker,
+    FSDPRewardWorker,
+    RewardBinaryDataset,
+    RewardWorker,
+)
 
 __all__ = [
     "ClassifierRewardServer",
     "ClassifierRewardServerWorker",
+    "EmbodiedRewardWorker",
+    "FSDPRewardWorker",
+    "RewardBinaryDataset",
+    "RewardWorker",
     "launch_classifier_reward_server",
 ]

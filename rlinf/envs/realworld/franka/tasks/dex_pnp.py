@@ -80,17 +80,16 @@ class DexpnpConfig(FrankaRobotConfig):
         self.action_scale = np.array([0.03, 1.5, 1])
         self.ee_pose_limit_min = self.target_ee_pose - np.array(
             [0.02, 0.02, 0.02, 0.003, 0.003, 0.003]
-        ) 
+        )
         self.ee_pose_limit_max = self.target_ee_pose + np.array(
             [0.02, 0.02, 0.1, 0.003, 0.003, 0.003]
         )
+        self.hand_target_state = np.array(self.hand_target_state)
+        self.hand_reset_state = np.array(self.hand_reset_state)
 
 
 class DexpnpEnv(FrankaEnv):
-    def __init__(self, override_cfg, worker_info=None, hardware_info=None, env_idx=0):
-        # Update config according to current env
-        config = DexpnpConfig(**override_cfg)
-        super().__init__(config, worker_info, hardware_info, env_idx)
+    CONFIG_CLS = DexpnpConfig
 
     @property
     def task_description(self):
