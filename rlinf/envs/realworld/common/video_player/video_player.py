@@ -50,28 +50,12 @@ class VideoPlayer:
             self._run_thread.join(timeout=3)
 
     def _play(self):
-        display = os.environ.get("DISPLAY")
-        if not display:
-            # Try common fallback values for headful environments
-            for candidate in [":0", ":1", ":4"]:
-                try:
-                    os.environ["DISPLAY"] = candidate
-                    # Quick test: can we open a window?
-                    import subprocess
-                    ret = subprocess.run(
-                        ["xdpyinfo"], capture_output=True, timeout=2,
-                    )
-                    if ret.returncode == 0:
-                        display = candidate
-                        break
-                except Exception:
-                    continue
-
-            if not display:
-                warnings.warn(
-                    "No display found. VideoPlayer will not run. Set DISPLAY environment variable to enable."
-                )
-                return
+        if not os.environ.get("DISPLAY"):
+            warnings.warn(
+                "No display found. VideoPlayer will not run. "
+                "Set DISPLAY environment variable to enable."
+            )
+            return
 
         self.is_running = True
         try:
@@ -88,8 +72,8 @@ class VideoPlayer:
                     axis=0,
                 )
 
-            cv2.imshow("Cameras", frame)
-            cv2.waitKey(1)
+                cv2.imshow("Cameras", frame)
+                cv2.waitKey(1)
         finally:
             cv2.destroyAllWindows()
             cv2.waitKey(1)

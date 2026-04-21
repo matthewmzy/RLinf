@@ -79,15 +79,7 @@ class RealSenseCamera(BaseCamera):
         """Apply optional exposure settings for the RealSense color sensor."""
         rs = self._rs
 
-        try:
-            color_sensor = self.profile.get_device().first_color_sensor()
-        except Exception as exc:
-            _logger.warning(
-                "Could not access RealSense color sensor for %s: %s",
-                self._camera_info.name,
-                exc,
-            )
-            return
+        color_sensor = self.profile.get_device().first_color_sensor()
 
         if color_sensor is None:
             return
@@ -127,10 +119,7 @@ class RealSenseCamera(BaseCamera):
             if not has_frame:
                 break
             if not self._frame_queue.empty():
-                try:
-                    self._frame_queue.get_nowait()
-                except queue.Empty:
-                    pass
+                self._frame_queue.get_nowait()
             self._frame_queue.put(frame)
 
     def _read_frame(self) -> tuple[bool, Optional[np.ndarray]]:
