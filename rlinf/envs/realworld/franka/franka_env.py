@@ -32,7 +32,7 @@ from rlinf.scheduler import (
 )
 from rlinf.utils.logging import get_logger
 
-from .end_effectors.base import EndEffectorType
+from .end_effectors.base import EndEffectorType, normalize_end_effector_type
 from .franka_robot_state import FrankaRobotState
 from .utils import (
     clip_euler_to_target_window,
@@ -113,7 +113,7 @@ class FrankaRobotConfig:
     )
 
     # -- End-effector selection -------------------------------------------
-    # One of "franka_gripper" or "ruiyan_hand".
+    # One of "franka_gripper", "robotiq_gripper", or "ruiyan_hand".
     end_effector_type: str = "franka_gripper"
     # Extra kwargs forwarded to the end-effector constructor.
     end_effector_config: dict = field(default_factory=dict)
@@ -157,6 +157,10 @@ class FrankaEnv(gym.Env):
         config = self.CONFIG_CLS(**override_cfg)
         self._logger = get_logger()
         self.config = config
+        self.config.end_effector_type = normalize_end_effector_type(
+            self.config.end_effector_type,
+            self.config.gripper_type,
+        ).value
         self._task_description = config.task_description
         self.hardware_info = hardware_info
         self.env_idx = env_idx
@@ -248,6 +252,10 @@ class FrankaEnv(gym.Env):
             self.config.gripper_connection = getattr(
                 self.hardware_info.config, "gripper_connection", None
             )
+        self.config.end_effector_type = normalize_end_effector_type(
+            self.config.end_effector_type,
+            self.config.gripper_type,
+        ).value
 
         # Place the controller on controller_node_rank if the arm lives on a
         # different machine (e.g. cameras on GPU server, arm on NUC).
@@ -264,7 +272,6 @@ class FrankaEnv(gym.Env):
             worker_rank=self.env_worker_rank,
             end_effector_type=self.config.end_effector_type,
             end_effector_config=self.config.end_effector_config,
-            gripper_type=self.config.gripper_type or "franka",
             gripper_connection=self.config.gripper_connection,
         )
 
@@ -299,7 +306,7 @@ class FrankaEnv(gym.Env):
     def step(self, action: np.ndarray):
         """Take a step in the environment.
 
-        For Franka gripper (7-D action)::
+        For gripper end-effectors (7-D action)::
 
             [x_delta, y_delta, z_delta, rx_delta, ry_delta, rz_delta, gripper_action]
 
@@ -529,14 +536,14 @@ class FrankaEnv(gym.Env):
     @property
     def _is_hand(self) -> bool:
         """Whether the active end-effector is a dexterous hand."""
-        return self._ee_type != EndEffectorType.FRANKA_GRIPPER
+        return self._ee_type.is_hand
 
     def _init_action_obs_spaces(self):
         """Initialize action and observation spaces, including arm safety box.
 
         The action dimension adapts to the active end-effector:
-        - Franka gripper: 7-D (6 arm + 1 gripper)
-        - Dexterous hand:  12-D (6 arm + 6 hand DOFs)
+        - Gripper: 7-D (6 arm + 1 gripper)
+        - Dexterous hand: 12-D (6 arm + 6 hand DOFs)
         """
         self._xyz_safe_space = gym.spaces.Box(
             low=self.config.ee_pose_limit_min[:3],
@@ -770,7 +777,7 @@ class FrankaEnv(gym.Env):
     def _end_effector_action(self, ee_action: np.ndarray) -> bool:
         """Dispatch an action to the active end-effector.
 
-        For the Franka gripper the action is a scalar binary signal;
+        For gripper end-effectors the action is a scalar binary signal;
         for dexterous hands it is a 6-D continuous target.
 
         Args:
@@ -780,7 +787,7 @@ class FrankaEnv(gym.Env):
         Returns:
             ``True`` if the action caused a meaningful state change.
         """
-        if self._ee_type == EndEffectorType.FRANKA_GRIPPER:
+        if self._ee_type.is_gripper:
             # Binary gripper logic (backward compatible)
             position = float(ee_action[0]) * self.config.action_scale[2]
             if (

@@ -30,7 +30,7 @@ def create_button_env(
     worker_info: Any,
     hardware_info: Any,
     env_idx: int,
-    env_cfg: Mapping[str, Any] | None = None,
+    env_cfg: Mapping[str, Any],
 ) -> gym.Env:
     env = ButtonEnv(
         override_cfg=override_cfg,
@@ -38,8 +38,6 @@ def create_button_env(
         hardware_info=hardware_info,
         env_idx=env_idx,
     )
-    if env_cfg is None:
-        return env
     return apply_single_arm_wrappers(env, env_cfg)
 
 

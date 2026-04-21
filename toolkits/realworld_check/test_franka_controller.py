@@ -18,7 +18,7 @@ Environment variables
 ---------------------
 FRANKA_ROBOT_IP          Robot arm IP (required).
 FRANKA_END_EFFECTOR_TYPE End-effector type: ``franka_gripper`` (default),
-                         or ``ruiyan_hand``.
+                         ``robotiq_gripper``, or ``ruiyan_hand``.
 FRANKA_HAND_PORT         Serial port for the dexterous hand
                          (default ``/dev/ttyUSB0``).
 FRANKA_HAND_BAUDRATE     Baudrate for the dexterous hand
@@ -76,6 +76,10 @@ _HELP_TEXT = f"""\
 """
 
 
+def _is_gripper_type(end_effector_type: str) -> bool:
+    return end_effector_type in {"franka_gripper", "robotiq_gripper"}
+
+
 def _print_table(headers: list[str], rows: list[list[str]]) -> None:
     """Print a simple ASCII table."""
     widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
@@ -97,7 +101,7 @@ def _fmt_arr(arr, decimals: int = 4) -> str:
 def _handle_gethand(controller) -> None:
     """Print normalised hand finger positions."""
     hand_type = controller.get_hand_type().wait()[0]
-    if hand_type == "franka_gripper":
+    if _is_gripper_type(hand_type):
         state = controller.get_state().wait()[0]
         print(f"  Gripper pos: {state.gripper_position}  ({'open' if state.gripper_open else 'closed'})")
         return
@@ -113,8 +117,8 @@ def _handle_gethand(controller) -> None:
 def _handle_gethand_detail(controller) -> None:
     """Print detailed per-motor diagnostics."""
     hand_type = controller.get_hand_type().wait()[0]
-    if hand_type == "franka_gripper":
-        print("  Current end-effector is Franka gripper; no detailed motor info.")
+    if _is_gripper_type(hand_type):
+        print("  Current end-effector is a gripper; no detailed motor info.")
         return
     detail = controller.get_hand_detailed_state().wait()[0]
     finger_names = detail.get("finger_names", [])
@@ -185,7 +189,7 @@ def main():
     print(f"{_BOLD}Starting FrankaController ...{_RESET}")
     print(f"  Robot IP:        {robot_ip}")
     print(f"  End-effector:    {end_effector_type}")
-    if end_effector_type != "franka_gripper":
+    if end_effector_type == "ruiyan_hand":
         print(f"  Hand port:       {hand_port}")
         print(f"  Baudrate:        {hand_baudrate}")
 
@@ -255,7 +259,7 @@ def main():
                 print(f"  Joint pos:     {_fmt_arr(state.arm_joint_position)}")
                 print(f"  Joint vel:     {_fmt_arr(state.arm_joint_velocity)}")
                 hand_type = controller.get_hand_type().wait()[0]
-                if hand_type == "franka_gripper":
+                if _is_gripper_type(hand_type):
                     print(f"  Gripper pos:   {state.gripper_position}  ({'open' if state.gripper_open else 'closed'})")
                 else:
                     print(f"  Hand type:     {hand_type}")

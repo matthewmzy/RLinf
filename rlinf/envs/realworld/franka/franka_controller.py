@@ -23,7 +23,12 @@ from scipy.spatial.transform import Rotation as R
 from rlinf.scheduler import Cluster, NodePlacementStrategy, Worker
 from rlinf.utils.logging import get_logger
 
-from .end_effectors import EndEffector, EndEffectorType, create_end_effector
+from .end_effectors import (
+    EndEffector,
+    EndEffectorType,
+    create_end_effector,
+    normalize_end_effector_type,
+)
 from .franka_robot_state import FrankaRobotState
 
 
@@ -39,7 +44,7 @@ class FrankaController(Worker):
         ros_pkg: str = "serl_franka_controllers",
         end_effector_type: str = "franka_gripper",
         end_effector_config: Optional[dict] = None,
-        gripper_type: str = "franka",
+        gripper_type: Optional[str] = None,
         gripper_connection: Optional[str] = None,
     ):
         """Launch a FrankaController on the specified worker's node."""
@@ -64,15 +69,17 @@ class FrankaController(Worker):
         ros_pkg: str = "serl_franka_controllers",
         end_effector_type: str = "franka_gripper",
         end_effector_config: Optional[dict] = None,
-        gripper_type: str = "franka",
+        gripper_type: Optional[str] = None,
         gripper_connection: Optional[str] = None,
     ):
         super().__init__()
         self._logger = get_logger()
         self._robot_ip = robot_ip
         self._ros_pkg = ros_pkg
-        self._end_effector_type = EndEffectorType(end_effector_type)
-        self._gripper_type = gripper_type
+        self._end_effector_type = normalize_end_effector_type(
+            end_effector_type,
+            gripper_type,
+        )
 
         # Lazy-import ROS packages so the module can be imported on non-ROS nodes.
         import geometry_msgs.msg as geom_msg
@@ -111,19 +118,18 @@ class FrankaController(Worker):
         end_effector_config: dict,
         gripper_connection: Optional[str],
     ) -> None:
-        if self._end_effector_type == EndEffectorType.FRANKA_GRIPPER:
+        if self._end_effector_type.is_gripper:
             from rlinf.envs.realworld.common.gripper import create_gripper
 
             self._gripper = create_gripper(
-                gripper_type=self._gripper_type,
+                gripper_type=self._end_effector_type.gripper_backend,
                 ros=self._ros,
                 port=gripper_connection,
                 **end_effector_config,
             )
             self._logger.info(
-                "Gripper initialised: end_effector=%s backend=%s",
+                "Gripper initialised: end_effector=%s",
                 self._end_effector_type.value,
-                self._gripper_type,
             )
             return
 
@@ -199,13 +205,13 @@ class FrankaController(Worker):
     def is_robot_up(self) -> bool:
         """Check whether the arm and active end-effector are ready."""
         arm_ok = self._ros.get_input_channel_status(self._arm_state_channel)
-        if self._end_effector_type == EndEffectorType.FRANKA_GRIPPER:
+        if self._end_effector_type.is_gripper:
             return arm_ok and self._gripper.is_ready()
         return arm_ok
 
     def get_state(self) -> FrankaRobotState:
         """Get the current state of the Franka robot."""
-        if self._end_effector_type == EndEffectorType.FRANKA_GRIPPER:
+        if self._end_effector_type.is_gripper:
             self._state.gripper_position = self._gripper.position
             self._state.gripper_open = self._gripper.is_open
             self._state.hand_position = None
@@ -218,10 +224,7 @@ class FrankaController(Worker):
         """Start the impedance controller."""
         load_gripper = (
             "true"
-            if (
-                self._end_effector_type == EndEffectorType.FRANKA_GRIPPER
-                and self._gripper_type == "franka"
-            )
+            if self._end_effector_type == EndEffectorType.FRANKA_GRIPPER
             else "false"
         )
         self._impedance = psutil.Popen(
@@ -262,10 +265,7 @@ class FrankaController(Worker):
 
         load_gripper = (
             "true"
-            if (
-                self._end_effector_type == EndEffectorType.FRANKA_GRIPPER
-                and self._gripper_type == "franka"
-            )
+            if self._end_effector_type == EndEffectorType.FRANKA_GRIPPER
             else "false"
         )
         self._rospy.set_param("/target_joint_positions", reset_pos)
@@ -310,7 +310,7 @@ class FrankaController(Worker):
 
     def command_end_effector(self, action: np.ndarray) -> bool:
         """Send an action to the active end-effector."""
-        if self._end_effector_type == EndEffectorType.FRANKA_GRIPPER:
+        if self._end_effector_type.is_gripper:
             value = float(np.asarray(action).reshape(-1)[0])
             if value <= -0.5 and self._state.gripper_open:
                 self.close_gripper()
@@ -325,7 +325,7 @@ class FrankaController(Worker):
 
     def reset_end_effector(self, target_state: np.ndarray | None = None) -> None:
         """Reset the end-effector to a target or default state."""
-        if self._end_effector_type == EndEffectorType.FRANKA_GRIPPER:
+        if self._end_effector_type.is_gripper:
             self.open_gripper()
             return
 
@@ -333,13 +333,13 @@ class FrankaController(Worker):
         self._end_effector.reset(target_state)
 
     def open_gripper(self):
-        if self._end_effector_type == EndEffectorType.FRANKA_GRIPPER:
+        if self._end_effector_type.is_gripper:
             self._gripper.open()
             self._state.gripper_open = True
         self.log_debug("Open gripper")
 
     def close_gripper(self):
-        if self._end_effector_type == EndEffectorType.FRANKA_GRIPPER:
+        if self._end_effector_type.is_gripper:
             self._gripper.close()
             self._state.gripper_open = False
         self.log_debug("Close gripper")
@@ -348,7 +348,7 @@ class FrankaController(Worker):
         assert 0 <= position <= 255, (
             f"Invalid gripper position {position}, must be between 0 and 255"
         )
-        if self._end_effector_type == EndEffectorType.FRANKA_GRIPPER:
+        if self._end_effector_type.is_gripper:
             self._gripper.move(position, speed)
         self.log_debug(f"Move gripper to position: {position}")
 
@@ -383,13 +383,13 @@ class FrankaController(Worker):
         return self._end_effector_type.value
 
     def get_hand_state(self) -> np.ndarray | None:
-        if self._end_effector_type == EndEffectorType.FRANKA_GRIPPER:
+        if self._end_effector_type.is_gripper:
             return None
         assert self._end_effector is not None
         return self._end_effector.get_state()
 
     def get_hand_detailed_state(self) -> dict:
-        if self._end_effector_type == EndEffectorType.FRANKA_GRIPPER:
+        if self._end_effector_type.is_gripper:
             return {
                 "gripper_position": self._gripper.position,
                 "gripper_open": self._gripper.is_open,
@@ -398,7 +398,7 @@ class FrankaController(Worker):
         return self._end_effector.get_detailed_state()
 
     def get_hand_finger_names(self) -> list[str]:
-        if self._end_effector_type == EndEffectorType.FRANKA_GRIPPER:
+        if self._end_effector_type.is_gripper:
             return ["gripper"]
         assert self._end_effector is not None
         return self._end_effector.finger_names

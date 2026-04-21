@@ -36,31 +36,12 @@ from rlinf.envs.realworld.franka.tasks.peg_insertion_env import (
     PegInsertionEnv as PegInsertionEnv,
 )
 
-
-def _maybe_apply_single_arm_wrappers(
-    env: gym.Env,
-    env_cfg: Mapping[str, Any] | None,
-) -> gym.Env:
-    if env_cfg is None:
-        return env
-    return apply_single_arm_wrappers(env, env_cfg)
-
-
-def _maybe_apply_dual_arm_wrappers(
-    env: gym.Env,
-    env_cfg: Mapping[str, Any] | None,
-) -> gym.Env:
-    if env_cfg is None:
-        return env
-    return apply_dual_arm_wrappers(env, env_cfg)
-
-
 def create_franka_env(
     override_cfg: dict[str, Any],
     worker_info: Any,
     hardware_info: Any,
     env_idx: int,
-    env_cfg: Mapping[str, Any] | None = None,
+    env_cfg: Mapping[str, Any],
 ) -> gym.Env:
     env = FrankaEnv(
         override_cfg=override_cfg,
@@ -68,7 +49,7 @@ def create_franka_env(
         hardware_info=hardware_info,
         env_idx=env_idx,
     )
-    return _maybe_apply_single_arm_wrappers(env, env_cfg)
+    return apply_single_arm_wrappers(env, env_cfg)
 
 
 def create_dual_franka_env(
@@ -76,7 +57,7 @@ def create_dual_franka_env(
     worker_info: Any,
     hardware_info: Any,
     env_idx: int,
-    env_cfg: Mapping[str, Any] | None = None,
+    env_cfg: Mapping[str, Any],
 ) -> gym.Env:
     env = DualFrankaEnv(
         override_cfg=override_cfg,
@@ -84,7 +65,7 @@ def create_dual_franka_env(
         hardware_info=hardware_info,
         env_idx=env_idx,
     )
-    return _maybe_apply_dual_arm_wrappers(env, env_cfg)
+    return apply_dual_arm_wrappers(env, env_cfg)
 
 
 def create_peg_insertion_env(
@@ -92,7 +73,7 @@ def create_peg_insertion_env(
     worker_info: Any,
     hardware_info: Any,
     env_idx: int,
-    env_cfg: Mapping[str, Any] | None = None,
+    env_cfg: Mapping[str, Any],
 ) -> gym.Env:
     env = PegInsertionEnv(
         override_cfg=override_cfg,
@@ -100,7 +81,7 @@ def create_peg_insertion_env(
         hardware_info=hardware_info,
         env_idx=env_idx,
     )
-    return _maybe_apply_single_arm_wrappers(env, env_cfg)
+    return apply_single_arm_wrappers(env, env_cfg)
 
 
 def create_franka_bin_relocation_env(
@@ -108,7 +89,7 @@ def create_franka_bin_relocation_env(
     worker_info: Any,
     hardware_info: Any,
     env_idx: int,
-    env_cfg: Mapping[str, Any] | None = None,
+    env_cfg: Mapping[str, Any],
 ) -> gym.Env:
     env = FrankaBinRelocationEnv(
         override_cfg=override_cfg,
@@ -116,7 +97,7 @@ def create_franka_bin_relocation_env(
         hardware_info=hardware_info,
         env_idx=env_idx,
     )
-    return _maybe_apply_single_arm_wrappers(env, env_cfg)
+    return apply_single_arm_wrappers(env, env_cfg)
 
 
 def create_bottle_env(
@@ -124,7 +105,7 @@ def create_bottle_env(
     worker_info: Any,
     hardware_info: Any,
     env_idx: int,
-    env_cfg: Mapping[str, Any] | None = None,
+    env_cfg: Mapping[str, Any],
 ) -> gym.Env:
     env = BottleEnv(
         override_cfg=override_cfg,
@@ -132,7 +113,7 @@ def create_bottle_env(
         hardware_info=hardware_info,
         env_idx=env_idx,
     )
-    return _maybe_apply_single_arm_wrappers(env, env_cfg)
+    return apply_single_arm_wrappers(env, env_cfg)
 
 
 def create_dexpnp_env(
@@ -140,7 +121,7 @@ def create_dexpnp_env(
     worker_info: Any,
     hardware_info: Any,
     env_idx: int,
-    env_cfg: Mapping[str, Any] | None = None,
+    env_cfg: Mapping[str, Any],
 ) -> gym.Env:
     env = DexpnpEnv(
         override_cfg=override_cfg,
@@ -148,7 +129,7 @@ def create_dexpnp_env(
         hardware_info=hardware_info,
         env_idx=env_idx,
     )
-    return _maybe_apply_single_arm_wrappers(env, env_cfg)
+    return apply_single_arm_wrappers(env, env_cfg)
 
 
 register(

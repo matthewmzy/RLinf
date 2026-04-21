@@ -24,7 +24,50 @@ class EndEffectorType(str, Enum):
     """Supported end-effector types for the Franka robot arm."""
 
     FRANKA_GRIPPER = "franka_gripper"
+    ROBOTIQ_GRIPPER = "robotiq_gripper"
     RUIYAN_HAND = "ruiyan_hand"
+
+    @property
+    def is_gripper(self) -> bool:
+        return self in (
+            type(self).FRANKA_GRIPPER,
+            type(self).ROBOTIQ_GRIPPER,
+        )
+
+    @property
+    def is_hand(self) -> bool:
+        return self == type(self).RUIYAN_HAND
+
+    @property
+    def gripper_backend(self) -> str:
+        if self == type(self).FRANKA_GRIPPER:
+            return "franka"
+        if self == type(self).ROBOTIQ_GRIPPER:
+            return "robotiq"
+        raise ValueError(f"{self.value!r} is not a gripper type")
+
+
+def normalize_end_effector_type(
+    end_effector_type: str | EndEffectorType,
+    gripper_type: str | None = None,
+) -> EndEffectorType:
+    if isinstance(end_effector_type, str):
+        end_effector_type = EndEffectorType(end_effector_type)
+
+    if end_effector_type.is_hand or gripper_type is None:
+        return end_effector_type
+    if end_effector_type == EndEffectorType.ROBOTIQ_GRIPPER:
+        return end_effector_type
+
+    gt = gripper_type.lower()
+    if gt == "franka":
+        return EndEffectorType.FRANKA_GRIPPER
+    if gt == "robotiq":
+        return EndEffectorType.ROBOTIQ_GRIPPER
+    raise ValueError(
+        f"Unsupported gripper_type={gripper_type!r}. "
+        "Supported types: 'franka', 'robotiq'."
+    )
 
 
 class EndEffector(ABC):

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import queue
 import time
 from typing import Optional
 
@@ -111,11 +110,7 @@ class RealSenseCamera(BaseCamera):
     def _capture_frames(self):
         while self._frame_capturing_start:
             time.sleep(1 / self._camera_info.fps)
-            try:
-                has_frame, frame = self._read_frame()
-            except RuntimeError:
-                # RealSense may timeout on the first few frames; retry.
-                continue
+            has_frame, frame = self._read_frame()
             if not has_frame:
                 break
             if not self._frame_queue.empty():

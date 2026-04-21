@@ -12,9 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .base import EndEffector, EndEffectorType
+from .base import EndEffector, EndEffectorType, normalize_end_effector_type
 
-__all__ = ["EndEffector", "EndEffectorType", "create_end_effector"]
+__all__ = [
+    "EndEffector",
+    "EndEffectorType",
+    "create_end_effector",
+    "normalize_end_effector_type",
+]
 
 
 def create_end_effector(
@@ -25,7 +30,7 @@ def create_end_effector(
 
     Args:
         end_effector_type: The type of end-effector to create.
-            One of ``"franka_gripper"`` or ``"ruiyan_hand"``.
+            One of ``"ruiyan_hand"``.
         **kwargs: Additional keyword arguments forwarded to the end-effector
             constructor.
 
@@ -38,16 +43,12 @@ def create_end_effector(
     if isinstance(end_effector_type, str):
         end_effector_type = EndEffectorType(end_effector_type)
 
-    if end_effector_type == EndEffectorType.FRANKA_GRIPPER:
-        from .franka_gripper import FrankaGripper
-
-        return FrankaGripper(**kwargs)
-    elif end_effector_type == EndEffectorType.RUIYAN_HAND:
+    if end_effector_type == EndEffectorType.RUIYAN_HAND:
         from .ruiyan_hand import RuiyanHand
 
         return RuiyanHand(**kwargs)  # noqa: F811
-    else:
-        raise ValueError(
-            f"Unknown end-effector type: {end_effector_type}. "
-            f"Supported types: {[e.value for e in EndEffectorType]}"
-        )
+
+    raise ValueError(
+        f"Unsupported end-effector type: {end_effector_type}. "
+        "Supported types: ['ruiyan_hand']"
+    )

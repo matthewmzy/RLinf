@@ -26,15 +26,6 @@ import torch
 from filelock import FileLock
 from omegaconf import OmegaConf
 
-from rlinf.envs.realworld.common.wrappers import (
-    DexHandIntervention,
-    GripperCloseEnv,
-    KeyboardRewardDoneMultiStageWrapper,
-    KeyboardRewardDoneWrapper,
-    Quat2EulerWrapper,
-    RelativeFrame,
-    SpacemouseIntervention,
-)
 from rlinf.envs.realworld.venv import NoAutoResetSyncVectorEnv
 from rlinf.envs.utils import to_tensor
 from rlinf.scheduler import WorkerInfo
@@ -83,37 +74,8 @@ class RealWorldEnv(gym.Env):
             worker_info=worker_info,
             hardware_info=hardware_info,
             env_idx=env_idx,
+            env_cfg=self.cfg,
         )
-        is_dex_hand = (
-            env.action_space.shape == (12,)
-            or (
-                hasattr(env, "config")
-                and getattr(env.config, "end_effector_type", "franka_gripper")
-                != "franka_gripper"
-            )
-        )
-        if self.cfg.get("no_gripper", True) and not is_dex_hand:
-            env = GripperCloseEnv(env)
-        if not env.config.is_dummy and self.cfg.get("use_spacemouse", True):
-            if is_dex_hand:
-                glove_cfg = self.cfg.get("glove_config", {})
-                env = DexHandIntervention(
-                    env,
-                    left_port=glove_cfg.get("left_port", "/dev/ttyACM0"),
-                    right_port=glove_cfg.get("right_port", None),
-                    glove_frequency=glove_cfg.get("frequency", 60),
-                    glove_config_file=glove_cfg.get("config_file", None),
-                )
-            else:
-                env = SpacemouseIntervention(env)
-        if not env.config.is_dummy and self.cfg.get("keyboard_reward_wrapper", None):
-            if self.cfg.keyboard_reward_wrapper == "multi_stage":
-                env = KeyboardRewardDoneMultiStageWrapper(env)
-            elif self.cfg.keyboard_reward_wrapper == "single_stage":
-                env = KeyboardRewardDoneWrapper(env)
-
-        env = RelativeFrame(env)
-        env = Quat2EulerWrapper(env)
         return env
 
     @staticmethod
