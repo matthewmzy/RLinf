@@ -103,14 +103,38 @@ class DataCollector(Worker):
         Returns (is_success, classifier_reward) if classifier wrapper is
         active, otherwise falls back to reward-based check.
         """
-        # Vectorized info: "succeed" is a numpy array of shape (num_envs,)
-        succeed = info.get("succeed", None)
-        clf_reward = info.get("classifier_reward", None)
-        if succeed is not None:
-            if isinstance(succeed, np.ndarray):
-                return bool(succeed[0]), clf_reward[0] if clf_reward is not None else None
-            return bool(succeed), clf_reward
-        return None, None
+        succeed = self._extract_scalar(info.get("succeed", None))
+        clf_reward = self._extract_scalar(info.get("classifier_reward", None))
+        if succeed is None:
+            return None, clf_reward
+        return bool(succeed), clf_reward
+
+    @staticmethod
+    def _extract_scalar(value):
+        """Extract a Python scalar from tensor/ndarray/list-like values."""
+        if value is None:
+            return None
+        if isinstance(value, torch.Tensor):
+            if value.numel() == 0:
+                return None
+            return value.reshape(-1)[0].item()
+        if isinstance(value, np.ndarray):
+            if value.size == 0:
+                return None
+            return value.reshape(-1)[0].item()
+        if isinstance(value, (list, tuple)):
+            if not value:
+                return None
+            return value[0]
+        return value
+
+    @staticmethod
+    def _to_column_tensor(value, *, dtype):
+        """Convert scalars or vectors to the `[B, 1]` layout used by trajectories."""
+        tensor = torch.as_tensor(value, dtype=dtype).cpu()
+        if tensor.ndim == 0:
+            tensor = tensor.unsqueeze(0)
+        return tensor.reshape(-1, 1)
 
     def run(self):
         max_steps = self.cfg.env.eval.max_episode_steps
@@ -129,13 +153,9 @@ class DataCollector(Worker):
             f"{'=' * 60}"
         )
 
-        current_rollout = EmbodiedRolloutResult(
-            max_episode_length=self.cfg.env.eval.max_episode_steps,,
-            model_weights_id="demo_expert",
-        )
+        current_rollout = EmbodiedRolloutResult(max_episode_length=max_steps)
 
         current_obs_processed = self._process_obs(obs)
-        step_in_ep = 0
 
         # Print first episode header
         episode_cnt += 1
@@ -152,35 +172,31 @@ class DataCollector(Worker):
         )
 
         while success_cnt < self.num_data_episodes:
-            action = np.zeros((1, 6))
-            next_obs, reward, done, _, info = self.env.step(action)
+            action = np.zeros((1, self.action_dim), dtype=np.float32)
+            next_obs, reward, terminated, truncated, info = self.env.step(
+                action, auto_reset=False
+            )
 
             if "intervene_action" in info:
                 action = info["intervene_action"]
 
             next_obs_processed = self._process_obs(next_obs)
 
-            terminated_tensor = terminated.unsqueeze(1)
-            truncated_tensor = truncated.unsqueeze(1)
+            terminated_tensor = self._to_column_tensor(terminated, dtype=torch.bool)
+            truncated_tensor = self._to_column_tensor(truncated, dtype=torch.bool)
             done_tensor = terminated_tensor | truncated_tensor
-            done = bool(done_tensor.any().item())
 
             action_tensor = torch.as_tensor(action, dtype=torch.float32)
-            reward_tensor = reward.float().unsqueeze(1)
-
-            if isinstance(truncated, torch.Tensor):
-                trunc_tensor = truncated.bool().cpu()
-            else:
-                trunc_tensor = torch.tensor(truncated).bool()
-            if trunc_tensor.ndim == 1:
-                trunc_tensor = trunc_tensor.unsqueeze(1)
+            if action_tensor.ndim == 1:
+                action_tensor = action_tensor.unsqueeze(0)
+            reward_tensor = self._to_column_tensor(reward, dtype=torch.float32)
 
             step_result = ChunkStepResult(
                 actions=action_tensor,
                 rewards=reward_tensor,
                 dones=done_tensor,
-                terminations=done_tensor,
-                truncations=torch.zeros_like(done_tensor),
+                terminations=terminated_tensor,
+                truncations=truncated_tensor,
                 forward_inputs={"action": action_tensor},
             )
 
@@ -189,68 +205,67 @@ class DataCollector(Worker):
                 curr_obs=current_obs_processed, next_obs=next_obs_processed
             )
 
-            obs = next_obs
-            current_obs_processed = next_obs_processed
+            episode_done = bool(done_tensor.any().item())
+            if not episode_done:
+                obs = next_obs
+                current_obs_processed = next_obs_processed
+                continue
 
-            episode_done = bool(done) or bool(truncated)
-            if episode_done:
-                # Determine success: prefer classifier info, fallback to reward
-                clf_success, clf_reward_val = self._check_classifier_success(info)
-                if clf_success is not None:
-                    is_success = clf_success
-                else:
-                    r_val = (
-                        reward[0]
-                        if hasattr(reward, "__getitem__") and len(reward) > 0
-                        else reward
-                    )
-                    if isinstance(r_val, torch.Tensor):
-                        r_val = r_val.item()
-                    is_success = int(r_val) > 0
+            reward_value = self._extract_scalar(reward)
+            reward_value = float(reward_value) if reward_value is not None else 0.0
+            self.total_cnt += 1
 
-                success_cnt += int(r_val)
-                self.total_cnt += 1
+            # Determine success: prefer classifier info, fallback to reward
+            clf_success, clf_reward_val = self._check_classifier_success(info)
+            if clf_success is not None:
+                is_success = clf_success
+                success_metric = (
+                    float(clf_reward_val)
+                    if clf_reward_val is not None
+                    else reward_value
+                )
+            else:
+                is_success = reward_value >= 0.5
+                success_metric = reward_value
+
+            if is_success:
+                success_cnt += 1
                 self.log_info(
-                    f"Success: {r_val}. Total: {success_cnt}/{self.num_data_episodes}"
+                    f"Episode {episode_cnt} succeeded "
+                    f"(metric={success_metric:.3f}). "
+                    f"Total: {success_cnt}/{self.num_data_episodes}"
                 )
 
-                    trajectory = current_rollout.to_trajectory()
+                trajectory = current_rollout.to_trajectory()
+                if trajectory.intervene_flags is not None:
                     trajectory.intervene_flags = torch.ones_like(
                         trajectory.intervene_flags
                     )
-                    self.buffer.add_trajectories([trajectory])
-
-                    progress_bar.update(1)
-                else:
-                    self.log_info(
-                        f"Episode ended (reward={r_val:.2f}). "
-                        f"Discarded. Total success: {success_cnt}/{self.num_data_episodes}"
-                    )
-
-                obs, _ = self.env.reset()
-                current_obs_processed = self._process_obs(obs)
-                current_rollout = EmbodiedRolloutResult(
-                    max_episode_length=self.cfg.env.eval.max_episode_steps,
+                self.buffer.add_trajectories([trajectory])
+                progress_bar.update(1)
+            else:
+                self.log_info(
+                    f"Episode {episode_cnt} ended without success "
+                    f"(metric={success_metric:.3f}). "
+                    f"Discarded. Total success: {success_cnt}/{self.num_data_episodes}"
                 )
 
-                # Reset for next episode
-                if success_cnt < self.num_data_episodes:
-                    obs, _ = self.env.reset()
-                    current_obs_processed = self._process_obs(obs)
-                    current_rollout = EmbodiedRolloutResult(
-                        max_episode_length=max_steps,
-                        model_weights_id="demo_expert",
-                    )
-                    step_in_ep = 0
-                    episode_cnt += 1
-                    self.log_info(
-                        f"\n{'#' * 50}\n"
-                        f"  Episode {episode_cnt}  "
-                        f"success: {success_cnt}/{self.num_data_episodes}\n"
-                        f"  >>> Start teleoperation <<<\n"
-                        f"{'#' * 50}"
-                    )
+            if success_cnt >= self.num_data_episodes:
+                break
 
+            obs, _ = self.env.reset()
+            current_obs_processed = self._process_obs(obs)
+            current_rollout = EmbodiedRolloutResult(max_episode_length=max_steps)
+            episode_cnt += 1
+            self.log_info(
+                f"\n{'#' * 50}\n"
+                f"  Episode {episode_cnt}  "
+                f"success: {success_cnt}/{self.num_data_episodes}\n"
+                f"  >>> Start teleoperation <<<\n"
+                f"{'#' * 50}"
+            )
+
+        progress_bar.close()
         self.buffer.close()
         self.log_info(
             f"Finished. Demos saved in: {os.path.join(self.cfg.runner.logger.log_path, 'demos')}"
