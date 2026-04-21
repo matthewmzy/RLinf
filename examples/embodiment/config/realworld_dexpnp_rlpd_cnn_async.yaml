@@ -25,7 +25,7 @@ cluster:
     rollout:
       node_group: "4090"
       placement: 0
-    reward_server:
+    reward:
       node_group: "4090"
       placement: 0
   node_groups:
@@ -38,13 +38,6 @@ cluster:
         configs:
           - robot_ip: ROBOT_IP # Replace with your robot's IP address
             node_rank: 1
-
-# ClassifierRewardServer configuration
-reward_server:
-  checkpoint_path: "/path/to/reward_classifier.pt"
-  image_keys: null
-  device: cuda
-  server_name: "ClassifierRewardServer"
 
 runner:
   task_type: embodied
@@ -140,8 +133,6 @@ env:
     glove_config:
       left_port: "/dev/ttyACM0"
       frequency: 30
-    classifier_reward_wrapper:
-      threshold: 0.75
     override_cfg:
       camera_configs: ${cameras.realsense}
       target_ee_pose: TARGET_EE_POSE # Replace with your target end-effector pose
@@ -213,7 +204,23 @@ actor:
       buffer_dtype: ${actor.model.precision}
 
 reward:
-  use_reward_model: False
+  use_reward_model: True
+  group_name: "RewardGroup"
+  standalone_realworld: True
+  reward_mode: "per_step"
+  reward_threshold: 0.75
+  reward_weight: 1.0
+  env_reward_weight: 0.0
+  model:
+    model_path: REWARD_MODEL_PATH
+    model_type: "resnet"
+    pretrained: False
+    arch: "resnet18"
+    hidden_dim: 256
+    dropout: 0
+    image_size: [3, 128, 128]
+    normalize: true
+    precision: "fp32"
 
 critic:
   use_critic_model: False

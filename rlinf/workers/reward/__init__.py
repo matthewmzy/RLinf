@@ -14,11 +14,6 @@
 
 """Reward workers for RLinf."""
 
-from rlinf.workers.reward.classifier_reward_server import ClassifierRewardServer
-from rlinf.workers.reward.classifier_reward_worker import (
-    ClassifierRewardServerWorker,
-    launch_classifier_reward_server,
-)
 from rlinf.workers.reward.reward_worker import (
     EmbodiedRewardWorker,
     FSDPRewardWorker,
@@ -27,11 +22,8 @@ from rlinf.workers.reward.reward_worker import (
 )
 
 __all__ = [
-    "ClassifierRewardServer",
-    "ClassifierRewardServerWorker",
     "EmbodiedRewardWorker",
     "FSDPRewardWorker",
     "RewardBinaryDataset",
     "RewardWorker",
-    "launch_classifier_reward_server",
 ]

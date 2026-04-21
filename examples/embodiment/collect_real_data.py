@@ -97,18 +97,6 @@ class DataCollector(Worker):
                 ret_obs[key] = val.clone()
         return ret_obs
 
-    def _check_classifier_success(self, info):
-        """Check classifier-based success from info dict.
-
-        Returns (is_success, classifier_reward) if classifier wrapper is
-        active, otherwise falls back to reward-based check.
-        """
-        succeed = self._extract_scalar(info.get("succeed", None))
-        clf_reward = self._extract_scalar(info.get("classifier_reward", None))
-        if succeed is None:
-            return None, clf_reward
-        return bool(succeed), clf_reward
-
     @staticmethod
     def _extract_scalar(value):
         """Extract a Python scalar from tensor/ndarray/list-like values."""
@@ -138,7 +126,6 @@ class DataCollector(Worker):
 
     def run(self):
         max_steps = self.cfg.env.eval.max_episode_steps
-        use_classifier = self.cfg.env.eval.get("classifier_reward_wrapper", None) is not None
 
         obs, _ = self.env.reset()
         success_cnt = 0
@@ -149,7 +136,7 @@ class DataCollector(Worker):
             f"  Data collection started\n"
             f"  Target successful demos: {self.num_data_episodes}\n"
             f"  Max steps per episode: {max_steps}\n"
-            f"  Success criterion: {'visual classifier' if use_classifier else 'target pose (built-in)'}\n"
+            f"  Success criterion: env reward >= 0.5\n"
             f"{'=' * 60}"
         )
 
@@ -215,18 +202,8 @@ class DataCollector(Worker):
             reward_value = float(reward_value) if reward_value is not None else 0.0
             self.total_cnt += 1
 
-            # Determine success: prefer classifier info, fallback to reward
-            clf_success, clf_reward_val = self._check_classifier_success(info)
-            if clf_success is not None:
-                is_success = clf_success
-                success_metric = (
-                    float(clf_reward_val)
-                    if clf_reward_val is not None
-                    else reward_value
-                )
-            else:
-                is_success = reward_value >= 0.5
-                success_metric = reward_value
+            is_success = reward_value >= 0.5
+            success_metric = reward_value
 
             if is_success:
                 success_cnt += 1
@@ -273,30 +250,6 @@ class DataCollector(Worker):
         self.env.close()
 
 
-def _launch_classifier_reward_server(cfg, cluster, component_placement):
-    """Launch ClassifierRewardServer if configured in component_placement.
-
-    Returns:
-        WorkerGroup or None if not configured.
-    """
-    from rlinf.workers.reward import launch_classifier_reward_server
-
-    reward_server_strategy = component_placement.get_strategy("reward_server", required=False)
-    if reward_server_strategy is not None:
-        reward_server_cfg = cfg.get("reward_server", None)
-        if reward_server_cfg is None:
-            raise ValueError(
-                "component_placement has 'reward_server' but config missing 'reward_server' section"
-            )
-        return launch_classifier_reward_server(
-            cfg=cfg,
-            cluster=cluster,
-            placement_strategy=reward_server_strategy,
-        )
-
-    return None
-
-
 @hydra.main(
     version_base="1.1", config_path="config", config_name="realworld_collect_data"
 )
@@ -305,16 +258,10 @@ def main(cfg):
     component_placement = ComponentPlacement(cfg, cluster)
     env_placement = component_placement.get_strategy("env")
 
-    # Launch ClassifierRewardServer if configured
-    server_handle = _launch_classifier_reward_server(cfg, cluster, component_placement)
-
     collector = DataCollector.create_group(cfg).launch(
         cluster, name=cfg.env.group_name, placement_strategy=env_placement
     )
     collector.run().wait()
-
-    if server_handle is not None:
-        server_handle.shutdown()
 
 
 if __name__ == "__main__":

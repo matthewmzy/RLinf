@@ -290,7 +290,7 @@ class FrameCollector(Worker):
     config_path="config",
     config_name="realworld_collect_dataset",
 )
-def main(cfg):
+def main(cfg) -> None:
     cluster = Cluster(cluster_cfg=cfg.cluster)
     component_placement = ComponentPlacement(cfg, cluster)
     env_placement = component_placement.get_strategy("env")

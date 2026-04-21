@@ -446,7 +446,7 @@
    recap
    co_training
    franka
-   franka-dexhand
+   franka_dexhand
    franka_reward_model
    franka_zed_robotiq
    franka_gello
