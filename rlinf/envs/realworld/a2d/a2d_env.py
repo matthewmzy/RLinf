@@ -49,7 +49,7 @@ class A2DRobotConfig:
     max_num_steps: int = 100
     reset_on_env_reset: bool = True
     task_name: str = "A2D teleoperation"
-    policy_action_dim: int = 28
+    policy_action_dim: Optional[int] = None
     waist_action: Optional[list[float]] = None
     reset_controller_action: Optional[list[float]] = None
     reset_pose_dataset_path: Optional[str] = None
@@ -59,13 +59,11 @@ class A2DRobotConfig:
     reset_move_timeout_s: float = 12.0
     reset_tolerance: float = 0.03
 
-    # RLinf policies usually act in [-1, 1]; map that range into controller action values.
-    normalize_actions: bool = True
-    clip_policy_actions: bool = True
-    action_low: list[float] = field(
-        default_factory=lambda: [-1.0] * 16 + [0.0] * 12
-    )
-    action_high: list[float] = field(default_factory=lambda: [1.0] * 28)
+    # Bounds for the policy-visible action space. When policy_action_dim == 26,
+    # these exclude the 2 waist dims, which stay fixed inside the env.
+    clip_policy_actions: Optional[bool] = None
+    action_low: Optional[list[float]] = None
+    action_high: Optional[list[float]] = None
     model_control_modes: list[int] = field(default_factory=lambda: [0])
     teleop_control_modes: list[int] = field(default_factory=lambda: [1])
     idle_control_modes: list[int] = field(default_factory=lambda: [99])
@@ -114,8 +112,16 @@ class A2DRobotConfig:
         self.ready_timeout_s = float(self.ready_timeout_s)
         self.step_frequency = float(self.step_frequency)
         self.max_num_steps = int(self.max_num_steps)
+        if self.policy_action_dim is None:
+            raise ValueError("policy_action_dim must be provided explicitly for A2D.")
         self.policy_action_dim = int(self.policy_action_dim)
+        if self.clip_policy_actions is None:
+            raise ValueError("clip_policy_actions must be provided explicitly for A2D.")
         self.clip_policy_actions = bool(self.clip_policy_actions)
+        if self.action_low is None or self.action_high is None:
+            raise ValueError(
+                "action_low and action_high must be provided explicitly for A2D."
+            )
         if self.waist_action is not None:
             self.waist_action = np.asarray(
                 self.waist_action, dtype=np.float32
@@ -140,15 +146,16 @@ class A2DRobotConfig:
             self.expose_intervention_from_control_mode
         )
         self.filter_idle_transitions = bool(self.filter_idle_transitions)
-        if len(self.action_low) != len(self.action_high):
-            raise ValueError("action_low and action_high must have the same length.")
-        if len(self.action_low) != 28:
-            raise ValueError(
-                f"A2D expects 28 action dimensions, got {len(self.action_low)}."
-            )
         if self.policy_action_dim not in (26, 28):
             raise ValueError(
                 f"A2D only supports policy_action_dim 26 or 28, got {self.policy_action_dim}."
+            )
+        if len(self.action_low) != len(self.action_high):
+            raise ValueError("action_low and action_high must have the same length.")
+        if len(self.action_low) != self.policy_action_dim:
+            raise ValueError(
+                "action_low and action_high must contain exactly "
+                f"{self.policy_action_dim} policy action values, got {len(self.action_low)}."
             )
         if self.policy_action_dim == 26 and self.waist_action is not None and len(
             self.waist_action
@@ -320,17 +327,8 @@ class A2DEnv(gym.Env):
         return robot_state
 
     def _init_action_obs_spaces(self) -> None:
-        action_low = np.full((self.config.policy_action_dim,), -1.0, dtype=np.float32)
-        action_high = np.full((self.config.policy_action_dim,), 1.0, dtype=np.float32)
-        if not self.config.normalize_actions:
-            controller_low = np.asarray(self.config.action_low, dtype=np.float32)
-            controller_high = np.asarray(self.config.action_high, dtype=np.float32)
-            if self.config.policy_action_dim == 26:
-                action_low = controller_low[2:]
-                action_high = controller_high[2:]
-            else:
-                action_low = controller_low
-                action_high = controller_high
+        action_low = np.asarray(self.config.action_low, dtype=np.float32)
+        action_high = np.asarray(self.config.action_high, dtype=np.float32)
         self.action_space = gym.spaces.Box(action_low, action_high, dtype=np.float32)
 
         image_shapes = copy.deepcopy(self.config.image_shapes)
@@ -404,14 +402,7 @@ class A2DEnv(gym.Env):
 
     def _map_policy_action_to_controller(self, action: np.ndarray) -> np.ndarray:
         controller_action = self._expand_policy_action(action)
-        if not self.config.normalize_actions:
-            return controller_action.astype(np.float32)
-        low = np.asarray(self.config.action_low, dtype=np.float32)
-        high = np.asarray(self.config.action_high, dtype=np.float32)
-        controller_action = np.clip(controller_action, -1.0, 1.0)
-        return (
-            (((controller_action + 1.0) * 0.5) * (high - low) + low).astype(np.float32)
-        )
+        return controller_action.astype(np.float32)
 
     def _map_controller_action_to_policy(self, controller_action: np.ndarray) -> np.ndarray:
         controller_action = np.asarray(controller_action, dtype=np.float32).reshape(-1)
@@ -425,15 +416,7 @@ class A2DEnv(gym.Env):
             if self.config.policy_action_dim == 26
             else controller_action.copy()
         )
-        if not self.config.normalize_actions:
-            return policy_action.astype(np.float32)
-
-        low = np.asarray(self.config.action_low, dtype=np.float32)
-        high = np.asarray(self.config.action_high, dtype=np.float32)
-        normalized = 2.0 * (controller_action - low) / np.maximum(high - low, 1e-6) - 1.0
-        if self.config.policy_action_dim == 26:
-            normalized = normalized[2:]
-        return normalized.astype(np.float32)
+        return policy_action.astype(np.float32)
 
     def _get_controller_state_action(self, robot_state: A2DRobotState) -> np.ndarray:
         return np.concatenate(

@@ -68,7 +68,7 @@ python3 -m model_inference.run_inference_server
 
 ## 4. 配置 RLinf 集群
 
-参考 `examples/embodiment/config/realworld_a2d_sac_cnn.yaml`。
+参考 `examples/embodiment/config/realworld_a2d_sac_psi_async.yaml`。
 
 最关键的是 `node_groups` 里的 `A2D` hardware：
 
@@ -110,13 +110,13 @@ cluster:
 在 Ray 集群就绪后，于 head 节点执行：
 
 ```bash
-python examples/embodiment/train_embodied_agent.py --config-name realworld_a2d_sac_cnn
+python examples/embodiment/train_embodied_agent.py --config-name realworld_a2d_sac_psi_async
 ```
 
 如果只想验证配置链路，可先使用 dummy 配置：
 
 ```bash
-python examples/embodiment/train_embodied_agent.py --config-name ../tests/e2e_tests/embodied/realworld_a2d_dummy_sac_cnn
+python examples/embodiment/train_embodied_agent.py --config-name ../tests/e2e_tests/embodied/realworld_a2d_dummy_sac_psi
 ```
 
 ## 6. 当前观测与动作约定
@@ -131,13 +131,19 @@ python examples/embodiment/train_embodied_agent.py --config-name ../tests/e2e_te
 - `right_hand_states`
 - `waist_joints_states`
 
-默认动作维度为 28：
+当前 psi-policy 配置默认输出 26 维动作：
 
-- 0-15: 腰部 + 双臂关节
-- 16-21: 左手
-- 22-27: 右手
+- 0-13: 双臂关节
+- 14-19: 左手
+- 20-25: 右手
 
-RLinf 侧默认把策略输出 `[-1, 1]` 线性映射到配置里的 `action_low/action_high`。
+A2D env 会在发送给 controller 前补上前 2 个 waist 维度，形成 controller 需要的 28 维动作。
+
+RLinf 侧现在只保留 absolute-action 语义：
+
+- 策略输出直接是绝对关节目标
+- `action_low/action_high` 用来定义动作空间与可选 clipping
+- 不再支持 `[-1, 1] -> controller range` 的环境内二次缩放
 
 ## 7. 常见修改点
 

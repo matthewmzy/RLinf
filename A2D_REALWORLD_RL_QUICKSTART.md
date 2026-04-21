@@ -161,7 +161,6 @@ cluster:
 当前这份 A2D psi 配置已经默认包含这些和你需求强相关的设定：
 
 - `policy_action_dim: 26`
-- `normalize_actions: False`
 - `clip_policy_actions: False`
 - `model_control_modes: [0]`
 - `teleop_control_modes: [1]`
@@ -502,7 +501,6 @@ python examples/embodiment/train_embodied_agent.py \
 - `model_path` 和 `normalizer_path` 是否配对
 - 现在这份配置必须保持：
   - `policy_action_dim: 26`
-  - `normalize_actions: False`
   - `clip_policy_actions: False`
 
 ### 8.3 遥操作接管没有生效

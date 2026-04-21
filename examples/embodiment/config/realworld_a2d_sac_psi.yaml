@@ -144,7 +144,6 @@ env:
       max_num_steps: 96
       reset_on_env_reset: True
       policy_action_dim: 26
-      normalize_actions: False
       clip_policy_actions: False
       reset_controller_action:
         [
@@ -180,14 +179,14 @@ env:
         [
           -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
           -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
-          -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+          0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
           0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ]
       action_high:
         [
           1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
           1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-          1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+          1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
           1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         ]
     max_steps_per_rollout_epoch: 96  # chunk-aligned for 8-step psi-policy execution
@@ -203,7 +202,6 @@ env:
       max_num_steps: 96
       reset_on_env_reset: True
       policy_action_dim: 26
-      normalize_actions: False
       clip_policy_actions: False
       reset_controller_action:
         [
@@ -240,14 +238,14 @@ env:
         [
           -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
           -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
-          -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+          0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
           0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ]
       action_high:
         [
           1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
           1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-          1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+          1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
           1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         ]
     max_steps_per_rollout_epoch: 96  # chunk-aligned for 8-step psi-policy execution

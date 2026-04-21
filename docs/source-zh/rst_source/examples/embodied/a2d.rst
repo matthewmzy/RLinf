@@ -23,11 +23,11 @@ A2D 真机强化学习
 算法
 ----
 
-示例配置默认使用 SAC + CNN policy：
+示例配置默认使用 psi-policy 初始化的异步 SAC 微调：
 
-- ``image_num: 3`` 对应三路 RGB 图像
-- ``state_dim: 28`` 对应拼接后的机器人状态
-- ``action_dim: 28`` 对应 A2D controller 动作接口
+- 三路 RGB 图像输入：``rgb_head``、``rgb_left_hand``、``rgb_right_hand``
+- 策略动作维度默认是 ``26``，对应双臂 + 双手
+- A2D env 在发送给 controller 前会补齐前 2 个 waist 维度，形成 28 维 controller 动作
 
 安装
 ----
@@ -65,13 +65,13 @@ A2D 真机强化学习
    - ``env`` 运行在 A2D 工作站节点
    - ``rollout`` 和 ``actor`` 运行在 GPU 节点
 
-4. 参考 ``examples/embodiment/config/realworld_a2d_sac_cnn.yaml`` 作为起点。
+4. 参考 ``examples/embodiment/config/realworld_a2d_sac_psi_async.yaml`` 作为起点。
 
 5. 启动训练：
 
 .. code:: bash
 
-   python examples/embodiment/train_embodied_agent.py --config-name realworld_a2d_sac_cnn
+   python examples/embodiment/train_embodied_agent.py --config-name realworld_a2d_sac_psi_async
 
 配置说明
 --------
@@ -92,7 +92,8 @@ A2D hardware 配置如下：
 
 - 图像键名和尺寸
 - 状态键名和尺寸
-- 动作映射范围
+- 动作空间上下界
+- ``policy_action_dim``（当前 psi-policy 默认是 26）
 - controller 暴露出来的奖励 / 成功状态键
 
 Dummy 验证
@@ -103,4 +104,4 @@ Dummy 验证
 .. code:: bash
 
    python examples/embodiment/train_embodied_agent.py \
-     --config-name ../tests/e2e_tests/embodied/realworld_a2d_dummy_sac_cnn
+     --config-name ../tests/e2e_tests/embodied/realworld_a2d_dummy_sac_psi

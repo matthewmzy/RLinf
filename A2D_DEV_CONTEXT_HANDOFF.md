@@ -159,7 +159,6 @@ gRPC 观测对象里有三类信息：
 当前配置与实现已经确认：
 
 - `policy_action_dim: 26`
-- `normalize_actions: False`
 - `clip_policy_actions: False`
 
 原因：

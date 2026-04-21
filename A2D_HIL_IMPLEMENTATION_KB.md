@@ -92,6 +92,5 @@ These values are now treated in RLinf as:
 - `psi-policy` checkpoint actions are treated as absolute joint targets, not extra normalized controller-space actions.
 - For A2D SAC + psi-policy example config we therefore use:
   - `policy_action_dim: 26`
-  - `normalize_actions: False`
   - `clip_policy_actions: False`
   - `keyboard_reward_wrapper: single_stage`

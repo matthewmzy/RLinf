@@ -199,6 +199,36 @@ def test_preprocess_env_obs_keeps_images_in_zero_one_and_pads_history():
     )
 
 
+def test_preprocess_env_obs_derives_action_joint_obs_from_states():
+    cfg = PsiPolicyConfig(obs_horizon=1, image_size=4)
+    policy = _make_minimal_policy(cfg)
+    policy.shape_meta = {
+        "obs": {
+            **policy.shape_meta["obs"],
+            "action_arm_joints": {"shape": [14], "type": "low_dim", "horizon": 1},
+            "action_left_hand_joints": {"shape": [6], "type": "low_dim", "horizon": 1},
+            "action_right_hand_joints": {"shape": [6], "type": "low_dim", "horizon": 1},
+        },
+        "action": policy.shape_meta["action"],
+    }
+
+    states = torch.arange(28, dtype=torch.float32).unsqueeze(0)
+    processed = policy.preprocess_env_obs(
+        {
+            "main_images": torch.zeros(1, 2, 2, 3, dtype=torch.uint8),
+            "extra_view_images": torch.zeros(1, 2, 2, 2, 3, dtype=torch.uint8),
+            "states": states,
+        }
+    )
+
+    expected_arm = torch.cat([states[:, :7], states[:, 7:14]], dim=-1).unsqueeze(1)
+    expected_left_hand = states[:, 14:20].unsqueeze(1)
+    expected_right_hand = states[:, 20:26].unsqueeze(1)
+    assert torch.allclose(processed["action_arm_joints"], expected_arm)
+    assert torch.allclose(processed["action_left_hand_joints"], expected_left_hand)
+    assert torch.allclose(processed["action_right_hand_joints"], expected_right_hand)
+
+
 def test_move_obs_dict_to_encoder_device_matches_encoder_dtype():
     policy = _make_minimal_policy()
     policy.obs_encoder = nn.Linear(1, 1, bias=False).to(dtype=torch.bfloat16)

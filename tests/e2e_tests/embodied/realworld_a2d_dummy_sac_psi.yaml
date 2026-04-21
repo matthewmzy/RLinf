@@ -83,6 +83,10 @@ env:
     override_cfg:
       is_dummy: True
       task_name: "A2D psi-policy SAC test"
+      policy_action_dim: 26
+      clip_policy_actions: False
+      action_low: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      action_high: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
       image_shapes:
         rgb_head: [128, 128, 3]
         rgb_left_hand: [128, 128, 3]
@@ -96,6 +100,10 @@ env:
     override_cfg:
       is_dummy: True
       task_name: "A2D psi-policy SAC test"
+      policy_action_dim: 26
+      clip_policy_actions: False
+      action_low: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      action_high: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
       image_shapes:
         rgb_head: [128, 128, 3]
         rgb_left_hand: [128, 128, 3]

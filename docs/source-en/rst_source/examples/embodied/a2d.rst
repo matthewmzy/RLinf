@@ -23,11 +23,11 @@ Environment
 Algorithm
 ---------
 
-The provided example uses SAC with a CNN policy:
+The provided example uses async SAC fine-tuning initialized from psi-policy:
 
-- ``image_num: 3`` for the three RGB views
-- ``state_dim: 28`` from the concatenated robot state vector
-- ``action_dim: 28`` matching the A2D controller action contract
+- three RGB views: ``rgb_head``, ``rgb_left_hand``, and ``rgb_right_hand``
+- a default policy action dimension of ``26`` for the two arms and two hands
+- the A2D env prepends the 2 waist values before sending the final 28-dim action to the controller
 
 Installation
 ------------
@@ -65,13 +65,13 @@ Quick Start
    - ``env`` on the A2D workstation node
    - ``rollout`` and ``actor`` on the GPU node
 
-4. Use ``examples/embodiment/config/realworld_a2d_sac_cnn.yaml`` as the starting point.
+4. Use ``examples/embodiment/config/realworld_a2d_sac_psi_async.yaml`` as the starting point.
 
 5. Launch training:
 
 .. code:: bash
 
-   python examples/embodiment/train_embodied_agent.py --config-name realworld_a2d_sac_cnn
+   python examples/embodiment/train_embodied_agent.py --config-name realworld_a2d_sac_psi_async
 
 Configuration Notes
 -------------------
@@ -92,7 +92,8 @@ The environment override config can be used to change:
 
 - image keys and shapes
 - state keys and shapes
-- action range mapping
+- action bounds
+- ``policy_action_dim`` (the current psi-policy setup uses 26)
 - reward/success keys exposed by the controller
 
 Dummy Validation
@@ -103,4 +104,4 @@ For a lightweight pipeline check without a real robot:
 .. code:: bash
 
    python examples/embodiment/train_embodied_agent.py \
-     --config-name ../tests/e2e_tests/embodied/realworld_a2d_dummy_sac_cnn
+     --config-name ../tests/e2e_tests/embodied/realworld_a2d_dummy_sac_psi

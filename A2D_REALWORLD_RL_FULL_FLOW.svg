@@ -160,7 +160,7 @@
   <text class="body" x="346" y="628">1. 通过 gRPC 拉取观测</text>
   <text class="body" x="346" y="652">2. 将 28 维动作映射回 A2D controller</text>
   <text class="body" x="346" y="676">3. `policy_action_dim = 26` 时补 waist[2]</text>
-  <text class="body" x="346" y="700">4. `normalize_actions = False`，直接用绝对关节角</text>
+  <text class="body" x="346" y="700">4. 直接用绝对关节角，不做环境内二次缩放</text>
   <text class="body" x="346" y="724">5. 键盘 wrapper 在这里覆盖 reward / done</text>
 
   <rect class="box box-green" x="772" y="566" width="392" height="194"/>

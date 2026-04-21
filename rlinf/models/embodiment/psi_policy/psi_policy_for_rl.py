@@ -392,6 +392,7 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         super().__init__()
         self.cfg = cfg
         self.shape_meta = _build_shape_meta(cfg)
+        self.obs_encoder_target: Optional[str] = None
 
         self.policy = self._build_or_load_policy()
         self.obs_encoder = self.policy.obs_encoder
@@ -511,6 +512,9 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         policy.normalizer = _create_identity_normalizer(
             self.shape_meta, action_dim=self.cfg.action_dim
         )
+        self.obs_encoder_target = (
+            f"{type(obs_encoder).__module__}.{type(obs_encoder).__name__}"
+        )
         return policy
 
     def _load_workspace_policy(self, ckpt_path: str) -> PsiPolicy:
@@ -558,12 +562,17 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
 
         self.shape_meta = copy.deepcopy(cfg.shape_meta)
         self._sync_runtime_cfg_from_checkpoint(cfg, policy)
+        self.obs_encoder_target = getattr(
+            cfg.policy.obs_encoder,
+            "_target_",
+            f"{type(policy.obs_encoder).__module__}.{type(policy.obs_encoder).__name__}",
+        )
         logger.info(
             "Loaded psi-policy checkpoint with obs_horizon=%s, action_horizon=%s, "
             "encoder_target=%s, state_dict_key=%s",
             cfg.n_obs_steps,
             cfg.n_action_steps,
-            cfg.policy.obs_encoder._target_,
+            self.obs_encoder_target,
             policy_state_key,
         )
         return policy
@@ -771,6 +780,103 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             f"Unsupported normalizer payload in {normalizer_path}: {type(normalizer_state)}"
         )
 
+    def _get_known_low_dim_state_slices(self) -> dict[str, list[slice]]:
+        ss = self.cfg.state_split
+        state_slices = {
+            "left_arm_states": [slice(ss["left_arm"][0], ss["left_arm"][1])],
+            "right_arm_states": [slice(ss["right_arm"][0], ss["right_arm"][1])],
+            "arm_joint_states": [slice(ss["left_arm"][0], ss["right_arm"][1])],
+            "left_hand_states": [slice(ss["left_hand"][0], ss["left_hand"][1])],
+            "right_hand_states": [slice(ss["right_hand"][0], ss["right_hand"][1])],
+            "action_arm_joints": [
+                slice(ss["left_arm"][0], ss["left_arm"][1]),
+                slice(ss["right_arm"][0], ss["right_arm"][1]),
+            ],
+            "action_left_hand_joints": [
+                slice(ss["left_hand"][0], ss["left_hand"][1])
+            ],
+            "action_right_hand_joints": [
+                slice(ss["right_hand"][0], ss["right_hand"][1])
+            ],
+        }
+
+        waist_slice = slice(self.cfg.action_dim, self.cfg.action_dim + 2)
+        state_slices["waist_joints_states"] = [waist_slice]
+        state_slices["action_waist_joints"] = [waist_slice]
+        return state_slices
+
+    def _concat_state_slices(
+        self,
+        states: torch.Tensor,
+        state_slices: list[slice],
+        obs_key: str,
+    ) -> torch.Tensor:
+        required_dim = max(state_slice.stop for state_slice in state_slices)
+        if states.shape[-1] < required_dim:
+            raise ValueError(
+                f"psi-policy expects env states to include dims up to {required_dim} for '{obs_key}', "
+                f"got {states.shape[-1]}."
+            )
+        parts = [states[:, :, state_slice] for state_slice in state_slices]
+        if len(parts) == 1:
+            return parts[0].contiguous()
+        return torch.cat(parts, dim=-1).contiguous()
+
+    def _build_low_dim_obs(
+        self,
+        env_obs: dict[str, torch.Tensor],
+        states: Optional[torch.Tensor],
+        target_horizon: int,
+    ) -> dict[str, torch.Tensor]:
+        processed: dict[str, torch.Tensor] = {}
+        obs_meta = self.shape_meta.get("obs", {})
+        state_slices = self._get_known_low_dim_state_slices()
+
+        for key, meta in obs_meta.items():
+            if meta.get("type") != "low_dim":
+                continue
+
+            value: Optional[torch.Tensor] = None
+            if key in env_obs and key != "states":
+                value = self._to_btd(
+                    torch.as_tensor(env_obs[key]), target_horizon=target_horizon
+                )
+            elif key in state_slices:
+                if states is None:
+                    raise KeyError(
+                        f"psi-policy checkpoint expects low-dim obs '{key}', but env_obs does not contain "
+                        "'states' to derive it."
+                    )
+                value = self._concat_state_slices(states, state_slices[key], obs_key=key)
+
+            if value is None:
+                continue
+
+            expected_shape = meta.get("shape", [])
+            if len(expected_shape) == 1 and value.shape[-1] != int(expected_shape[0]):
+                raise ValueError(
+                    f"psi-policy obs '{key}' expects dim {int(expected_shape[0])}, got {value.shape[-1]}."
+                )
+            processed[key] = value
+
+        required_state_keys = [
+            key
+            for key in getattr(getattr(self, "obs_encoder", None), "state_keys", [])
+            if key in obs_meta
+        ]
+        missing_required_keys = [
+            key for key in required_state_keys if key not in processed
+        ]
+        if missing_required_keys:
+            available_keys = sorted(env_obs.keys())
+            raise KeyError(
+                "psi-policy checkpoint requires low-dim obs keys "
+                f"{missing_required_keys}, but RLinf could not build them from env_obs "
+                f"keys {available_keys}."
+            )
+
+        return processed
+
     def preprocess_env_obs(self, env_obs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         obs_horizon = self._get_runtime_obs_horizon()
         image_obs_keys = self._get_image_obs_keys()
@@ -801,29 +907,21 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             processed[image_obs_keys["left"]] = processed[image_obs_keys["main"]].clone()
             processed[image_obs_keys["right"]] = processed[image_obs_keys["main"]].clone()
 
-        states = self._to_btd(torch.as_tensor(env_obs["states"]), target_horizon=obs_horizon)
-        if states.shape[-1] < self.cfg.action_dim:
-            raise ValueError(
-                f"psi-policy expects at least {self.cfg.action_dim} state dims from A2D, got {states.shape[-1]}."
-            )
-
-        ss = self.cfg.state_split
-        state_slices = {
-            "right_arm_states": slice(ss["right_arm"][0], ss["right_arm"][1]),
-            "left_arm_states": slice(ss["left_arm"][0], ss["left_arm"][1]),
-            "left_hand_states": slice(ss["left_hand"][0], ss["left_hand"][1]),
-            "right_hand_states": slice(ss["right_hand"][0], ss["right_hand"][1]),
-            "waist_joints_states": slice(self.cfg.action_dim, self.cfg.action_dim + 2),
-        }
-        for key, state_slice in state_slices.items():
-            if key not in self.shape_meta["obs"]:
-                continue
-            if states.shape[-1] < state_slice.stop:
+        states = None
+        if "states" in env_obs:
+            states = self._to_btd(torch.as_tensor(env_obs["states"]), target_horizon=obs_horizon)
+            if states.shape[-1] < self.cfg.action_dim:
                 raise ValueError(
-                    f"psi-policy expects env states to include dims up to {state_slice.stop} for '{key}', "
-                    f"got {states.shape[-1]}."
+                    f"psi-policy expects at least {self.cfg.action_dim} state dims from A2D, got {states.shape[-1]}."
                 )
-            processed[key] = states[:, :, state_slice].contiguous()
+
+        processed.update(
+            self._build_low_dim_obs(
+                env_obs,
+                states=states,
+                target_horizon=obs_horizon,
+            )
+        )
         return processed
 
     def encode_obs(self, obs: dict[str, torch.Tensor], detach_encoder: bool = False):
