@@ -8,26 +8,30 @@ defaults:
 _preset:
   reset_controller_action: &a2d_reset_controller_action
     [
-      0.4359927773, 0.4000000358,
-      1.9186979532, -0.3541278243, -0.6377061009, -1.4183576107, 1.7035353184, -1.3996603489,
-      -1.0161094666, -1.7632544041, 0.4664293826, 0.5196883678, 1.4352442026, -1.8059952259,
-      1.3993842602, 1.0743135214, 0.2494447380, 0.0009070295, 0.0032560034, 0.0135472994,
-      0.9290074110, 0.9444035888, 0.0000000000, 0.0018140590, 0.0822954923, 0.0947613269,
-      0.9975231886, 0.9968835711,
+      0.6979961400, 0.4500000000,
+      1.9420366000, -0.4231712000, -0.8902466000, -1.4857279000, 1.7554438000, -1.3996819000,
+      -0.9746348000, -1.6847103000, 0.4934860000, 0.6415755000, 1.3170998000, -1.7865136000,
+      1.3996296000, 1.1738354000, 0.0000000000, 0.0014652000, 0.0021978000, 0.0461538000,
+      0.9975580000, 0.9825397000, 0.0000000000, 0.0102564000, 0.0954823000, 0.0627595000,
+      0.9968254000, 0.9975580000,
     ]
-  action_low: &a2d_open_action_low
+  safe_box_low: &a2d_safe_box_low
     [
-      -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
-      -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
+      1.6324763000, -0.7395217000, -1.0694433000, -1.4900000000,
+      1.5593078000, -1.4000000000, -1.4539014000, -1.9390030000,
+      0.4970931000, 0.2120801000, 1.0039701000, -1.9653741000,
+      1.4000000000, 0.9624191000,
       0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
       0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     ]
-  action_high: &a2d_open_action_high
+  safe_box_high: &a2d_safe_box_high
     [
-      1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-      1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-      1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-      1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+      2.1368800000, -0.4390409000, -0.3191070000, -1.1114357000,
+      1.9030758000, -1.4000000000, -0.7731066000, -1.4986966000,
+      0.7409096000, 0.8617690000, 1.4400209000, -1.6590335000,
+      1.4000000000, 1.5401177000,
+      0.1722222000, 0.0000000000, 0.1105263000, 0.1877193000, 1.0000000000, 1.0000000000,
+      0.0000000000, 0.0000000000, 0.2140351000, 0.2201755000, 1.0000000000, 1.0000000000,
     ]
 
 cluster:
@@ -70,7 +74,7 @@ runner:
   save_interval: -1
   weight_sync_interval: 1
   resume_dir: null
-  ckpt_path: null
+  ckpt_path: /home/descfly/ceyao_dev/RLinf/results/a2d_iql/bj01-dc09_20260414_60_cut_na32_u1000_b16/actor_model_state_dict.pt
   offline_critic_warmup_updates: 0
   offline_critic_warmup_save_dir: null
   offline_critic_warmup_micro_batch_size: 32
@@ -147,7 +151,6 @@ env:
       max_num_steps: 200
       reset_on_env_reset: True
       policy_action_dim: 26
-      waist_action: [0.40, 0.436]
       reset_controller_action: *a2d_reset_controller_action
       reset_move_timeout_s: 12.0
       reset_tolerance: 0.03
@@ -167,9 +170,9 @@ env:
         right_hand_states: [6]
         waist_joints_states: [2]
       safe_box:
-        enabled: false
-        low: *a2d_open_action_low
-        high: *a2d_open_action_high
+        enabled: true
+        low: *a2d_safe_box_low
+        high: *a2d_safe_box_high
     max_steps_per_rollout_epoch: 200
     max_episode_steps: 200
   eval:
@@ -182,7 +185,6 @@ env:
       max_num_steps: 200
       reset_on_env_reset: True
       policy_action_dim: 26
-      waist_action: [0.40, 0.436]
       reset_controller_action: *a2d_reset_controller_action
       reset_move_timeout_s: 12.0
       reset_tolerance: 0.03
@@ -202,9 +204,9 @@ env:
         right_hand_states: [6]
         waist_joints_states: [2]
       safe_box:
-        enabled: false
-        low: *a2d_open_action_low
-        high: *a2d_open_action_high
+        enabled: true
+        low: *a2d_safe_box_low
+        high: *a2d_safe_box_high
     max_steps_per_rollout_epoch: 200
     max_episode_steps: 200
 
@@ -227,8 +229,8 @@ rollout:
       window_size: 8
       overlap_steps: 4
   model:
-    model_path: "/home/descfly/ceyao_dev/psi-policy/data/outputs/2026.04.15/02.07_zjxc_v0.12_rgb-state/checkpoints/epoch=8200-train_loss=0.04975.ckpt"
-    normalizer_path: null
+    model_path: "/home/descfly/ceyao_dev/psi-policy/data/outputs/2026.04.18/23.45_zjxc_v0.12_3rgb_joint_headmask_viewtokens_na32/checkpoints/epoch=7000-train_loss=0.08475.ckpt"
+    normalizer_path: "/home/descfly/ceyao_dev/psi-policy/data/outputs/2026.04.18/23.45_zjxc_v0.12_3rgb_joint_headmask_viewtokens_na32/normalizer.pkl"
     precision: bf16
     noise_std_rollout: 0.0
   enable_torch_compile: False
@@ -244,8 +246,8 @@ actor:
   seed: 1234
   enable_offload: False
   model:
-    model_path: "/home/descfly/ceyao_dev/psi-policy/data/outputs/2026.04.15/02.07_zjxc_v0.12_rgb-state/checkpoints/epoch=8200-train_loss=0.04975.ckpt"
-    normalizer_path: null
+    model_path: "/home/descfly/ceyao_dev/psi-policy/data/outputs/2026.04.18/23.45_zjxc_v0.12_3rgb_joint_headmask_viewtokens_na32/checkpoints/epoch=7000-train_loss=0.08475.ckpt"
+    normalizer_path: "/home/descfly/ceyao_dev/psi-policy/data/outputs/2026.04.18/23.45_zjxc_v0.12_3rgb_joint_headmask_viewtokens_na32/normalizer.pkl"
     action_dim: 26
     num_action_chunks: 4
     use_chunk_rl: true

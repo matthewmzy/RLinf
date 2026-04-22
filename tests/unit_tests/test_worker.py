@@ -210,5 +210,21 @@ class TestLoadUserExtensions:
                 mock_module.register.assert_called_once()
 
 
+class TestWorkerLogging:
+    """Tests for Worker logging helpers."""
+
+    def test_log_info_forwards_logging_args(self):
+        """Verify logging helpers support stdlib logging-style formatting args."""
+        worker = object.__new__(Worker)
+        worker._logger = mock.Mock()
+        worker._stacklevel = 7
+
+        worker.log_info("mode=%s reset=%s", "rtc", True)
+
+        worker._logger.info.assert_called_once_with(
+            "mode=%s reset=%s", "rtc", True, stacklevel=7
+        )
+
+
 if __name__ == "__main__":
     pytest.main(["-v", __file__])

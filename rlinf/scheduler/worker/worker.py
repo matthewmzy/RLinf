@@ -886,31 +886,36 @@ class Worker(metaclass=WorkerMeta):
                 return port
         raise RuntimeError(f"Failed to acquire a free port after {max_tries} attempts.")
 
-    def log_on_first_rank(self, msg):
+    def _log_with_stacklevel(self, log_fn: Callable, msg, *args, **kwargs):
+        """Forward logging args while preserving the worker callsite stacklevel."""
+        kwargs.setdefault("stacklevel", self._stacklevel)
+        log_fn(msg, *args, **kwargs)
+
+    def log_on_first_rank(self, msg, *args, **kwargs):
         """Log a message only on the first rank of the worker group."""
         if self._rank == 0:
-            self._logger.info(msg, stacklevel=self._stacklevel)
+            self._log_with_stacklevel(self._logger.info, msg, *args, **kwargs)
 
-    def log_on_last_rank(self, msg):
+    def log_on_last_rank(self, msg, *args, **kwargs):
         """Log a message only on the last rank of the worker group."""
         if self._rank == self._world_size - 1:
-            self._logger.info(msg, stacklevel=self._stacklevel)
+            self._log_with_stacklevel(self._logger.info, msg, *args, **kwargs)
 
-    def log_debug(self, msg):
+    def log_debug(self, msg, *args, **kwargs):
         """Log at the debug level."""
-        self._logger.debug(msg, stacklevel=self._stacklevel)
+        self._log_with_stacklevel(self._logger.debug, msg, *args, **kwargs)
 
-    def log_info(self, msg):
+    def log_info(self, msg, *args, **kwargs):
         """Log at the info level."""
-        self._logger.info(msg, stacklevel=self._stacklevel)
+        self._log_with_stacklevel(self._logger.info, msg, *args, **kwargs)
 
-    def log_warning(self, msg):
+    def log_warning(self, msg, *args, **kwargs):
         """Log at the warning level."""
-        self._logger.warning(msg, stacklevel=self._stacklevel)
+        self._log_with_stacklevel(self._logger.warning, msg, *args, **kwargs)
 
-    def log_error(self, msg):
+    def log_error(self, msg, *args, **kwargs):
         """Log at the error level."""
-        self._logger.error(msg, stacklevel=self._stacklevel)
+        self._log_with_stacklevel(self._logger.error, msg, *args, **kwargs)
 
     def pop_execution_time(self, tag: str):
         """Retrieve the execution time of a function.

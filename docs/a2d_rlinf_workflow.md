@@ -70,11 +70,8 @@ python3 -m model_inference.run_inference_server
 
 推荐从新的显式 preset 开始，而不是继续直接改旧 alias：
 
-- `realworld_a2d_sac_psi_direct_async`：推荐的真机 RL 起点
-- `realworld_a2d_sac_psi_rtc_repro`：psi-policy RTC 复现
-- `realworld_a2d_sac_psi_rtc_async`：RTC + 真机 RL 噪声 + safe joint box
-- `realworld_a2d_sac_psi_direct_repro`：不带 RTC 的 direct chunk 复现
-- `realworld_a2d_sac_psi_window_repro` / `realworld_a2d_sac_psi_window_async`：window blend 平滑实验
+- `realworld_a2d_sac_psi_direct_repro` / `realworld_a2d_sac_psi_rtc_repro` / `realworld_a2d_sac_psi_window_repro`：贴近 `run_policy_inference.py` 现象的复现配置，正常走异步训练入口，但不加噪声
+- `realworld_a2d_sac_psi_direct_async` / `realworld_a2d_sac_psi_rtc_async` / `realworld_a2d_sac_psi_window_async`：真机 RL 配置，走异步训练入口并保留训练噪声
 
 旧入口 `realworld_a2d_sac_psi_async`、`realworld_a2d_sac_psi_async_repro`、`realworld_a2d_sac_psi_safe_explore`、`realworld_a2d_sac_psi` 仍然保留为兼容 alias。
 
@@ -118,7 +115,8 @@ cluster:
 在 Ray 集群就绪后，于 head 节点执行：
 
 ```bash
-python examples/embodiment/train_embodied_agent.py --config-name realworld_a2d_sac_psi_direct_async
+python examples/embodiment/train_async.py --config-name realworld_a2d_sac_psi_direct_repro
+python examples/embodiment/train_async.py --config-name realworld_a2d_sac_psi_direct_async
 ```
 
 如果只想验证配置链路，可先使用 dummy 配置：

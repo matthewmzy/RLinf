@@ -23,6 +23,19 @@ OmegaConf = pytest.importorskip("omegaconf").OmegaConf
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "examples" / "embodiment" / "config"
 EMBODIED_PATH = str(CONFIG_DIR.parent)
+EXPECTED_WARMSTART_CKPT = (
+    "/home/descfly/ceyao_dev/RLinf/results/a2d_iql/"
+    "bj01-dc09_20260414_60_cut_na32_u1000_b16/actor_model_state_dict.pt"
+)
+EXPECTED_POLICY_CKPT = (
+    "/home/descfly/ceyao_dev/psi-policy/data/outputs/2026.04.18/23.45_"
+    "zjxc_v0.12_3rgb_joint_headmask_viewtokens_na32/checkpoints/"
+    "epoch=7000-train_loss=0.08475.ckpt"
+)
+EXPECTED_NORMALIZER = (
+    "/home/descfly/ceyao_dev/psi-policy/data/outputs/2026.04.18/23.45_"
+    "zjxc_v0.12_3rgb_joint_headmask_viewtokens_na32/normalizer.pkl"
+)
 
 
 def _compose(config_name: str):
@@ -42,24 +55,31 @@ def _compose(config_name: str):
 
 
 @pytest.mark.parametrize(
-    ("config_name", "mode", "safe_enabled"),
+    ("config_name", "mode"),
     [
-        ("realworld_a2d_sac_psi_rtc_repro", "rtc", False),
-        ("realworld_a2d_sac_psi_rtc_async", "rtc", True),
-        ("realworld_a2d_sac_psi_direct_repro", "direct", False),
-        ("realworld_a2d_sac_psi_direct_async", "direct", True),
-        ("realworld_a2d_sac_psi_window_repro", "window_blend", False),
-        ("realworld_a2d_sac_psi_window_async", "window_blend", True),
+        ("realworld_a2d_sac_psi_rtc_repro", "rtc"),
+        ("realworld_a2d_sac_psi_rtc_async", "rtc"),
+        ("realworld_a2d_sac_psi_direct_repro", "direct"),
+        ("realworld_a2d_sac_psi_direct_async", "direct"),
+        ("realworld_a2d_sac_psi_window_repro", "window_blend"),
+        ("realworld_a2d_sac_psi_window_async", "window_blend"),
     ],
 )
-def test_new_psi_policy_presets_compose(config_name, mode, safe_enabled):
+def test_new_psi_policy_presets_compose(config_name, mode):
     cfg = _compose(config_name)
 
     assert cfg.rollout.action_execution.mode == mode
     assert cfg.rollout.action_execution.noise_stage == "pre_smooth"
     assert cfg.actor.model.num_action_chunks == 4
-    assert cfg.env.train.override_cfg.safe_box.enabled is safe_enabled
-    assert cfg.env.eval.override_cfg.safe_box.enabled is safe_enabled
+    assert cfg.env.train.override_cfg.safe_box.enabled is True
+    assert cfg.env.eval.override_cfg.safe_box.enabled is True
+    assert cfg.runner.ckpt_path == EXPECTED_WARMSTART_CKPT
+    assert cfg.actor.model.model_path == EXPECTED_POLICY_CKPT
+    assert cfg.rollout.model.model_path == EXPECTED_POLICY_CKPT
+    assert cfg.actor.model.normalizer_path == EXPECTED_NORMALIZER
+    assert cfg.rollout.model.normalizer_path == EXPECTED_NORMALIZER
+    assert cfg.env.train.override_cfg.reset_controller_action[0] == pytest.approx(0.69799614)
+    assert cfg.env.train.override_cfg.reset_controller_action[1] == pytest.approx(0.45)
 
 
 @pytest.mark.parametrize(
@@ -84,5 +104,5 @@ def test_async_preset_keeps_rollout_model_noise_override():
     assert cfg.rollout.model.noise_std_rollout == 0.005
     assert (
         OmegaConf.to_container(cfg.rollout.model, resolve=True)["normalizer_path"]
-        == "/home/psibot/workspace_zhiyuan/psi-policy/data/outputs/2026.04.10/04.54_zjxc_v0.8_vit-small_rgb-state/normalizer.pkl"
+        == EXPECTED_NORMALIZER
     )
