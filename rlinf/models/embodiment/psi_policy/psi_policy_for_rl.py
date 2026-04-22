@@ -20,6 +20,7 @@ import logging
 import os
 import pickle
 import sys
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -87,6 +88,9 @@ class PsiPolicyConfig:
     noise_std_rollout: float = 0.005
     num_action_chunks: int = 4
     use_chunk_rl: bool = False
+    rollout_rtc_enabled: bool = False
+    rollout_rtc_execute_step: Optional[int] = None
+    rollout_rtc_merge_weight_base: float = 0.8
 
     image_size: int = 224
     obs_horizon: int = 1
@@ -129,6 +133,11 @@ class PsiPolicyConfig:
         self.action_horizon = int(self.action_horizon)
         self.num_action_chunks = int(self.num_action_chunks)
         self.use_chunk_rl = bool(self.use_chunk_rl)
+        self.rollout_rtc_enabled = bool(self.rollout_rtc_enabled)
+        if self.rollout_rtc_execute_step is None:
+            self.rollout_rtc_execute_step = self.num_action_chunks
+        self.rollout_rtc_execute_step = int(self.rollout_rtc_execute_step)
+        self.rollout_rtc_merge_weight_base = float(self.rollout_rtc_merge_weight_base)
         self.num_q_heads = int(self.num_q_heads)
         self.obs_horizon = int(self.obs_horizon)
         self.fallback_hidden_size = int(self.fallback_hidden_size)
@@ -141,6 +150,16 @@ class PsiPolicyConfig:
             raise ValueError(
                 "num_action_chunks must be in [1, action_horizon] for psi-policy."
             )
+        if self.rollout_rtc_execute_step <= 0:
+            raise ValueError("rollout_rtc_execute_step must be > 0.")
+        if self.rollout_rtc_enabled and self.rollout_rtc_execute_step != self.num_action_chunks:
+            raise ValueError(
+                "rollout_rtc_enabled requires rollout_rtc_execute_step to match "
+                "num_action_chunks so RLinf pops the same number of actions per inference "
+                "as psi-policy client execute_step."
+            )
+        if self.rollout_rtc_merge_weight_base <= 0:
+            raise ValueError("rollout_rtc_merge_weight_base must be > 0.")
         if self.checkpoint_model_key not in {"model", "ema_model"}:
             raise ValueError(
                 "checkpoint_model_key must be either 'model' or 'ema_model'."
@@ -402,6 +421,7 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             self.obs_encoder.requires_grad_(False)
         self.action_dim = int(self.policy.action_dim)
         self.action_horizon = int(self.policy.action_horizon)
+        self._rollout_rtc_states: list[_RolloutRTCState] = []
         rl_action_mask, active_rl_action_indices = _build_rl_action_mask(
             self.action_dim, self.cfg.state_split, self.cfg.rl_action_mask
         )
@@ -446,6 +466,13 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
                 self.sac_action_feature_dim,
                 self.cfg.num_action_chunks,
                 self.action_dim,
+            )
+        if self.cfg.rollout_rtc_enabled:
+            logger.info(
+                "PsiPolicyForRL rollout RTC reproduction enabled: execute_step=%s, "
+                "merge_weight_base=%.3f.",
+                self.cfg.rollout_rtc_execute_step,
+                self.cfg.rollout_rtc_merge_weight_base,
             )
 
     @property
@@ -1038,6 +1065,110 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             reset_action = reset_action.unsqueeze(1)
         return action * rl_action_mask + reset_action * (1.0 - rl_action_mask)
 
+    def reset_rollout_rtc_state(self, batch_size: Optional[int] = None) -> None:
+        if batch_size is None:
+            self._rollout_rtc_states = []
+            return
+        self._rollout_rtc_states = [
+            _RolloutRTCState() for _ in range(int(batch_size))
+        ]
+
+    def _ensure_rollout_rtc_state(self, batch_size: int) -> None:
+        current_states = getattr(self, "_rollout_rtc_states", None)
+        if current_states is None or len(current_states) != batch_size:
+            self.reset_rollout_rtc_state(batch_size=batch_size)
+
+    def _rtc_find_nearest_point_index(
+        self, predictions: torch.Tensor, point: torch.Tensor
+    ) -> int:
+        search_steps = min(self.cfg.rollout_rtc_execute_step, predictions.shape[0])
+        if search_steps <= 0:
+            raise RuntimeError("RTC search_steps must be positive.")
+        distances = torch.linalg.vector_norm(
+            predictions[:search_steps] - point.unsqueeze(0), dim=-1
+        )
+        return int(torch.argmin(distances).item())
+
+    def _rtc_merge_prediction_queue(
+        self, rtc_state: "_RolloutRTCState", predictions: torch.Tensor
+    ) -> None:
+        if predictions.ndim != 2:
+            raise ValueError(
+                f"RTC predictions must have shape [horizon, action_dim], got {tuple(predictions.shape)}."
+            )
+        if not rtc_state.action_queue:
+            rtc_state.action_queue = deque(
+                predictions[idx].clone() for idx in range(predictions.shape[0])
+            )
+            return
+
+        reference_point = (
+            rtc_state.last_action
+            if rtc_state.last_action is not None
+            else rtc_state.action_queue[-1]
+        )
+        start_index = self._rtc_find_nearest_point_index(predictions, reference_point)
+        predictions_to_merge = [
+            predictions[idx].clone() for idx in range(start_index, predictions.shape[0])
+        ]
+        if len(predictions_to_merge) < self.cfg.num_action_chunks:
+            raise RuntimeError(
+                "RTC reproduction could not keep enough future actions after alignment: "
+                f"start_index={start_index}, horizon={predictions.shape[0]}, "
+                f"required_chunk={self.cfg.num_action_chunks}."
+            )
+
+        min_length = min(len(rtc_state.action_queue), len(predictions_to_merge))
+        for idx in range(min_length):
+            weight = self.cfg.rollout_rtc_merge_weight_base / (idx**2 + 1)
+            predictions_to_merge[idx] = (
+                weight * rtc_state.action_queue[idx]
+                + (1.0 - weight) * predictions_to_merge[idx]
+            )
+        rtc_state.action_queue = deque(predictions_to_merge)
+
+    def _rtc_pop_action_chunk(
+        self, rtc_state: "_RolloutRTCState", chunk_size: int
+    ) -> torch.Tensor:
+        if len(rtc_state.action_queue) < chunk_size:
+            raise RuntimeError(
+                "RTC reproduction queue underflow: "
+                f"requested {chunk_size} actions, only {len(rtc_state.action_queue)} left."
+            )
+
+        chunk_actions = []
+        for _ in range(chunk_size):
+            action = rtc_state.action_queue.popleft().clone()
+            rtc_state.last_action = action
+            chunk_actions.append(action)
+        return torch.stack(chunk_actions, dim=0)
+
+    def _apply_rollout_rtc(self, predicted_actions: torch.Tensor) -> torch.Tensor:
+        if predicted_actions.ndim != 3:
+            raise ValueError(
+                "RTC reproduction expects predicted actions with shape "
+                f"[B, horizon, action_dim], got {tuple(predicted_actions.shape)}."
+            )
+
+        batch_size = predicted_actions.shape[0]
+        self._ensure_rollout_rtc_state(batch_size)
+        predicted_actions_cpu = predicted_actions.detach().to(
+            device="cpu", dtype=torch.float32
+        )
+
+        merged_chunks = []
+        for env_idx in range(batch_size):
+            rtc_state = self._rollout_rtc_states[env_idx]
+            self._rtc_merge_prediction_queue(rtc_state, predicted_actions_cpu[env_idx])
+            merged_chunks.append(
+                self._rtc_pop_action_chunk(rtc_state, self.cfg.num_action_chunks)
+            )
+
+        merged_chunk_actions = torch.stack(merged_chunks, dim=0)
+        return merged_chunk_actions.to(
+            device=predicted_actions.device, dtype=predicted_actions.dtype
+        )
+
     def sac_forward(self, obs, raw_obs=None, **kwargs):
         del kwargs
         cond_tokens, obs_feature = self.encode_obs(obs)
@@ -1167,15 +1298,27 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         action_chunks_norm = self._sample_masked_action_chunks(
             action_chunks_mean_norm, noise_std
         )
-        chunks_norm = action_chunks_norm[:, : self.cfg.num_action_chunks, :]
-        model_chunk_actions = self.normalizer["action"].unnormalize(chunks_norm)
-        chunk_actions = model_chunk_actions
-        chunk_actions = self._apply_reset_pose_mask(chunk_actions, env_obs)
-        chunk_logprobs = self._compute_chunk_logprobs(
-            action_chunks_mean_norm[:, : self.cfg.num_action_chunks, :],
-            chunks_norm,
-            noise_std,
-        )
+        all_model_chunk_actions = self.normalizer["action"].unnormalize(action_chunks_norm)
+        all_chunk_actions = self._apply_reset_pose_mask(all_model_chunk_actions, env_obs)
+
+        if self.cfg.rollout_rtc_enabled:
+            if noise_std > 0:
+                raise ValueError(
+                    "rollout_rtc_enabled currently requires noise_std_rollout=0.0 so "
+                    "RTC-selected actions keep exact psi-policy client semantics."
+                )
+            chunk_actions = self._apply_rollout_rtc(all_chunk_actions)
+            model_chunk_actions = chunk_actions
+            chunk_logprobs = torch.zeros_like(chunk_actions)
+        else:
+            chunks_norm = action_chunks_norm[:, : self.cfg.num_action_chunks, :]
+            model_chunk_actions = all_model_chunk_actions[:, : self.cfg.num_action_chunks, :]
+            chunk_actions = all_chunk_actions[:, : self.cfg.num_action_chunks, :]
+            chunk_logprobs = self._compute_chunk_logprobs(
+                action_chunks_mean_norm[:, : self.cfg.num_action_chunks, :],
+                chunks_norm,
+                noise_std,
+            )
         chunk_values = torch.zeros(
             (chunk_actions.shape[0], 1),
             device=chunk_actions.device,
@@ -1200,3 +1343,9 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         if return_shared_feature:
             result["shared_feature"] = obs_feature
         return chunk_actions, result
+
+
+@dataclass
+class _RolloutRTCState:
+    action_queue: deque[torch.Tensor] = field(default_factory=deque)
+    last_action: Optional[torch.Tensor] = None
