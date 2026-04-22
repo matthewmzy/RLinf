@@ -25,3 +25,10 @@ video_cfg:
 init_params:
   id: "A2DEnv-v1"
   num_envs: null
+
+# New A2D safety entrypoint lives under env.{train,eval}.override_cfg.safe_box:
+#   safe_box:
+#     enabled: true
+#     low:  [26-dim joint lower bounds]
+#     high: [26-dim joint upper bounds]
+# Legacy action_low/action_high/clip_policy_actions are still accepted as aliases.

@@ -1,0 +1,24 @@
+defaults:
+  - preset/realworld_a2d_sac_psi_repro_base@_global_
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+runner:
+  logger:
+    experiment_name: "a2d_sac_psi_direct_repro"
+
+env:
+  train:
+    override_cfg:
+      task_name: "A2D psi-policy direct repro"
+  eval:
+    override_cfg:
+      task_name: "A2D psi-policy direct repro eval"
+
+rollout:
+  action_execution:
+    mode: direct

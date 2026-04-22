@@ -159,6 +159,47 @@ def test_a2d_env_dummy_reset_and_step():
     assert step_info == {}
 
 
+def test_a2d_env_safe_box_enables_joint_clipping():
+    pytest.importorskip("gymnasium")
+    from rlinf.envs.realworld.a2d import A2DEnv
+
+    env = A2DEnv(
+        override_cfg={
+            "is_dummy": True,
+            "policy_action_dim": 26,
+            "safe_box": {
+                "enabled": True,
+                "low": list(_A2D_ACTION_LOW),
+                "high": [0.5] * 26,
+            },
+        }
+    )
+
+    assert env.config.safe_box["enabled"] is True
+    assert env.config.clip_policy_actions is True
+    np.testing.assert_allclose(env.action_space.high, np.asarray([0.5] * 26, dtype=np.float32))
+
+
+def test_a2d_env_legacy_bounds_still_populate_safe_box():
+    pytest.importorskip("gymnasium")
+    from rlinf.envs.realworld.a2d import A2DEnv
+
+    env = A2DEnv(
+        override_cfg=_a2d_override_cfg(
+            is_dummy=True,
+            clip_policy_actions=True,
+        )
+    )
+
+    assert env.config.safe_box["enabled"] is True
+    np.testing.assert_allclose(
+        env.config.safe_box["low"], np.asarray(_A2D_ACTION_LOW, dtype=np.float32)
+    )
+    np.testing.assert_allclose(
+        env.config.safe_box["high"], np.asarray(_A2D_ACTION_HIGH, dtype=np.float32)
+    )
+
+
 def test_a2d_env_requires_explicit_action_config():
     pytest.importorskip("gymnasium")
     from rlinf.envs.realworld.a2d import A2DEnv

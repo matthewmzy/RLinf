@@ -281,8 +281,12 @@ function populateConfigOptions(configs) {
     .join("");
   if (currentValue && configs.includes(currentValue)) {
     select.value = currentValue;
-  } else if (configs.includes("realworld_a2d_sac_psi_safe_explore")) {
-    select.value = "realworld_a2d_sac_psi_safe_explore";
+  } else if (configs.includes("realworld_a2d_sac_psi_direct_async")) {
+    select.value = "realworld_a2d_sac_psi_direct_async";
+  } else if (configs.includes("realworld_a2d_sac_psi_rtc_repro")) {
+    select.value = "realworld_a2d_sac_psi_rtc_repro";
+  } else if (configs.includes("realworld_a2d_sac_psi_async")) {
+    select.value = "realworld_a2d_sac_psi_async";
   }
 }
 

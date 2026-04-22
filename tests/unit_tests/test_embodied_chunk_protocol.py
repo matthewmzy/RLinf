@@ -292,7 +292,8 @@ def test_generate_one_epoch_stops_after_rollout_stop_batch():
         del input_channel
         return next(env_batches)
 
-    def fake_predict(obs):
+    def fake_predict(obs, **kwargs):
+        del kwargs
         batch_size = obs["states"].shape[0]
         actions = torch.ones((batch_size, 2, 2), dtype=torch.float32)
         result = {

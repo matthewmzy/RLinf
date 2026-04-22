@@ -18,7 +18,7 @@ from typing import Any, Literal
 
 import numpy as np
 import torch
-from omegaconf import DictConfig, OmegaConf, open_dict
+from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
 from rlinf.config import SupportedModel
@@ -27,6 +27,10 @@ from rlinf.data.embodied_io_struct import (
 )
 from rlinf.models import get_model
 from rlinf.models.embodiment.base_policy import BasePolicy
+from rlinf.models.embodiment.psi_policy.rollout_execution import (
+    PsiPolicyActionExecutionAdapter,
+    resolve_action_execution_cfg,
+)
 from rlinf.scheduler import Channel, Cluster, CollectiveGroupOptions, Worker
 from rlinf.utils.comm_mapping import CommMapper
 from rlinf.utils.placement import HybridComponentPlacement
@@ -89,25 +93,135 @@ class MultiStepRolloutWorker(Worker):
         if self.expert_model is not None:
             self.expert_model.to(self.device)
 
-    def init_worker(self):
-        rollout_model_config = copy.deepcopy(self.cfg.actor.model)
-        with open_dict(rollout_model_config):
-            rollout_model_config.precision = self.cfg.rollout.model.precision
-            rollout_model_config.model_path = self.cfg.rollout.model.model_path
+    def _build_rollout_model_config(self) -> DictConfig:
+        return OmegaConf.merge(
+            copy.deepcopy(self.cfg.actor.model),
+            copy.deepcopy(self.cfg.rollout.model),
+        )
 
+    def _build_runtime_model_config(self, model_cfg: DictConfig) -> DictConfig:
+        runtime_cfg = copy.deepcopy(model_cfg)
+        if "precision" not in runtime_cfg:
+            runtime_cfg.precision = self.cfg.actor.model.precision
+        return runtime_cfg
+
+    def _should_use_psi_action_execution(self, model: BasePolicy | None) -> bool:
+        return bool(
+            model is not None
+            and hasattr(model, "predict_action_horizon_batch")
+            and SupportedModel(self.cfg.actor.model.model_type)
+            == SupportedModel.PSI_POLICY
+        )
+
+    def _build_psi_action_execution_adapter(
+        self, model: BasePolicy | None
+    ) -> PsiPolicyActionExecutionAdapter | None:
+        if not self._should_use_psi_action_execution(model):
+            return None
+        action_execution_cfg = resolve_action_execution_cfg(
+            self.cfg.rollout.get("action_execution", None),
+            execute_step=int(model.num_action_chunks),
+            action_horizon=int(model.action_horizon),
+            legacy_rollout_rtc_enabled=bool(
+                self.cfg.actor.model.get("rollout_rtc_enabled", False)
+            ),
+            legacy_rollout_rtc_search_window=self.cfg.actor.model.get(
+                "rollout_rtc_execute_step", None
+            ),
+            legacy_rollout_rtc_merge_weight_base=float(
+                self.cfg.actor.model.get("rollout_rtc_merge_weight_base", 0.8)
+            ),
+        )
+        adapter = PsiPolicyActionExecutionAdapter(
+            execute_step=int(model.num_action_chunks),
+            action_horizon=int(model.action_horizon),
+            cfg=action_execution_cfg,
+        )
+        self.log_info(
+            "Psi-policy rollout action execution: mode=%s, noise_stage=%s, "
+            "reset_on_episode_end=%s",
+            action_execution_cfg["mode"],
+            action_execution_cfg["noise_stage"],
+            action_execution_cfg["reset_on_episode_end"],
+        )
+        return adapter
+
+    @staticmethod
+    def _infer_obs_batch_size(env_obs: dict[str, Any]) -> int:
+        for key in ("states", "main_images", "task_descriptions"):
+            value = env_obs.get(key)
+            if isinstance(value, torch.Tensor):
+                return int(value.shape[0])
+            if isinstance(value, list):
+                return len(value)
+        raise ValueError("Cannot infer batch size from env obs.")
+
+    def _build_zero_prev_values(
+        self, env_obs: dict[str, Any], reference: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        batch_size = self._infer_obs_batch_size(env_obs)
+        device = reference.device if reference is not None else self.device
+        dtype = reference.dtype if reference is not None else torch.float32
+        return torch.zeros((batch_size, 1), device=device, dtype=dtype)
+
+    def _predict_psi_with_action_execution(
+        self,
+        model: BasePolicy,
+        adapter: PsiPolicyActionExecutionAdapter,
+        env_obs: dict[str, Any],
+        *,
+        execution_reset_mask: Any = None,
+        return_obs: bool = True,
+        return_shared_feature: bool = False,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        if execution_reset_mask is not None:
+            adapter.reset(execution_reset_mask)
+
+        rollout_prediction = model.predict_action_horizon_batch(
+            env_obs,
+            return_shared_feature=return_shared_feature,
+        )
+        execution_result = adapter.apply(
+            rollout_prediction["action_horizon"],
+            rollout_prediction["model_action_horizon"],
+        )
+        if execution_result.exact_logprobs:
+            chunk_logprobs = model.compute_rollout_chunk_logprobs(
+                action_chunks_mean_norm=rollout_prediction["action_chunks_mean_norm"],
+                action_chunks_norm=rollout_prediction["action_chunks_norm"],
+                num_chunks=execution_result.executed_actions.shape[1],
+            )
+        else:
+            chunk_logprobs = torch.zeros_like(execution_result.executed_actions)
+
+        result = model.build_rollout_batch_result(
+            env_obs=env_obs,
+            chunk_actions=execution_result.executed_actions,
+            model_chunk_actions=execution_result.model_actions,
+            chunk_logprobs=chunk_logprobs,
+            return_obs=return_obs,
+            shared_feature=rollout_prediction.get("shared_feature"),
+        )
+        return execution_result.executed_actions, result
+
+    def init_worker(self):
+        rollout_model_config = self._build_runtime_model_config(
+            self._build_rollout_model_config()
+        )
         self.hf_model: BasePolicy = get_model(rollout_model_config)
+        self.action_execution = self._build_psi_action_execution_adapter(self.hf_model)
 
         if self.cfg.runner.get("ckpt_path", None):
             model_dict = torch.load(self.cfg.runner.ckpt_path)
             self.hf_model.load_state_dict(model_dict)
 
         if self.cfg.rollout.get("expert_model", None):
-            expert_model_config = copy.deepcopy(self.cfg.actor.model)
-            with open_dict(expert_model_config):
-                expert_model_config.precision = self.cfg.rollout.expert_model.precision
-                expert_model_config.model_path = (
-                    self.cfg.rollout.expert_model.model_path
+            expert_model_config = self._build_runtime_model_config(
+                OmegaConf.merge(
+                    copy.deepcopy(self.cfg.actor.model),
+                    copy.deepcopy(self.cfg.rollout.expert_model),
                 )
+            )
             self.expert_model = get_model(expert_model_config)
 
             if self.cfg.runner.get("expert_ckpt_path", None):
@@ -246,7 +360,10 @@ class MultiStepRolloutWorker(Worker):
 
     @Worker.timer("predict")
     def predict(
-        self, env_obs: dict[str, Any], mode: Literal["train", "eval"] = "train"
+        self,
+        env_obs: dict[str, Any],
+        mode: Literal["train", "eval"] = "train",
+        execution_reset_mask: Any = None,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         kwargs = (
             self._train_sampling_params
@@ -284,6 +401,7 @@ class MultiStepRolloutWorker(Worker):
 
         with torch.no_grad():
             expert_label_flag = False
+            action_execution = getattr(self, "action_execution", None)
             # Decide which model to act via use_expert
             if use_expert:
                 actions, result = self.expert_model.predict_action_batch(
@@ -292,10 +410,22 @@ class MultiStepRolloutWorker(Worker):
                 )
                 expert_label_flag = True
             else:
-                actions, result = self.hf_model.predict_action_batch(
-                    env_obs=env_obs,
-                    **kwargs,
-                )
+                if action_execution is not None:
+                    actions, result = self._predict_psi_with_action_execution(
+                        self.hf_model,
+                        action_execution,
+                        env_obs,
+                        execution_reset_mask=execution_reset_mask,
+                        return_obs=kwargs.get("return_obs", True),
+                        return_shared_feature=kwargs.get(
+                            "return_shared_feature", False
+                        ),
+                    )
+                else:
+                    actions, result = self.hf_model.predict_action_batch(
+                        env_obs=env_obs,
+                        **kwargs,
+                    )
 
             # Decide re-label or not
             if (
@@ -331,6 +461,8 @@ class MultiStepRolloutWorker(Worker):
             hasattr(self.hf_model, "value_head") or hasattr(self.hf_model, "q_head")
         ):
             return None
+        if self._should_use_psi_action_execution(self.hf_model):
+            return self._build_zero_prev_values(final_obs).cpu().contiguous()
         with torch.no_grad():
             actions, result = self.predict(final_obs)
             if "prev_values" in result and result["prev_values"] is not None:
@@ -356,10 +488,16 @@ class MultiStepRolloutWorker(Worker):
     @Worker.timer("generate_one_epoch")
     async def generate_one_epoch(self, input_channel: Channel, output_channel: Channel):
         self.update_dagger_beta()
+        action_execution = getattr(self, "action_execution", None)
+        if action_execution is not None:
+            action_execution.reset()
         finished_stages = 0
         while finished_stages < self.num_pipeline_stages:
             env_output = await self.recv_env_output(input_channel)
-            actions, result = self.predict(env_output["obs"])
+            actions, result = self.predict(
+                env_output["obs"],
+                execution_reset_mask=env_output.get("execution_reset_mask", None),
+            )
             version_tensor = torch.full(
                 (actions.shape[0], 1),
                 float(self.version),
@@ -435,10 +573,19 @@ class MultiStepRolloutWorker(Worker):
             desc="Evaluating Rollout Epochs",
             disable=(self._rank != 0),
         ):
+            action_execution = getattr(self, "action_execution", None)
+            if action_execution is not None:
+                action_execution.reset()
             for _ in range(self.n_eval_chunk_steps):
                 for _ in range(self.num_pipeline_stages):
                     env_output = await self.recv_env_output(input_channel, mode="eval")
-                    actions, _ = self.predict(env_output["obs"], mode="eval")
+                    actions, _ = self.predict(
+                        env_output["obs"],
+                        mode="eval",
+                        execution_reset_mask=env_output.get(
+                            "execution_reset_mask", None
+                        ),
+                    )
                     self.send_chunk_actions(output_channel, actions, mode="eval")
 
         if self.enable_offload:
@@ -556,6 +703,24 @@ class MultiStepRolloutWorker(Worker):
             ]
             merged_final_obs = _merge_obs_dicts(final_obs_or_obs)
 
+        execution_reset_masks = [
+            obs_batch.get("execution_reset_mask", None) for obs_batch in obs_batches
+        ]
+        merged_execution_reset_mask = None
+        if any(mask is not None for mask in execution_reset_masks):
+            merged_execution_reset_mask = torch.cat(
+                [
+                    torch.as_tensor(mask, dtype=torch.bool).reshape(-1)
+                    if mask is not None
+                    else torch.zeros(
+                        MultiStepRolloutWorker._infer_env_batch_size(obs_batch),
+                        dtype=torch.bool,
+                    )
+                    for obs_batch, mask in zip(obs_batches, execution_reset_masks)
+                ],
+                dim=0,
+            )
+
         rollout_stop_values = [bool(obs_batch.get("rollout_stop", False)) for obs_batch in obs_batches]
         assert all(value == rollout_stop_values[0] for value in rollout_stop_values), (
             f"Inconsistent rollout_stop flags across merged env batches: {rollout_stop_values}"
@@ -565,6 +730,7 @@ class MultiStepRolloutWorker(Worker):
             "obs": merged_obs,
             "final_obs": merged_final_obs,
             "rollout_stop": rollout_stop_values[0],
+            "execution_reset_mask": merged_execution_reset_mask,
         }
 
     def send_chunk_actions(

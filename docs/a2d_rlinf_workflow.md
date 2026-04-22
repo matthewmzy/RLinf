@@ -68,7 +68,15 @@ python3 -m model_inference.run_inference_server
 
 ## 4. 配置 RLinf 集群
 
-参考 `examples/embodiment/config/realworld_a2d_sac_psi_async.yaml`。
+推荐从新的显式 preset 开始，而不是继续直接改旧 alias：
+
+- `realworld_a2d_sac_psi_direct_async`：推荐的真机 RL 起点
+- `realworld_a2d_sac_psi_rtc_repro`：psi-policy RTC 复现
+- `realworld_a2d_sac_psi_rtc_async`：RTC + 真机 RL 噪声 + safe joint box
+- `realworld_a2d_sac_psi_direct_repro`：不带 RTC 的 direct chunk 复现
+- `realworld_a2d_sac_psi_window_repro` / `realworld_a2d_sac_psi_window_async`：window blend 平滑实验
+
+旧入口 `realworld_a2d_sac_psi_async`、`realworld_a2d_sac_psi_async_repro`、`realworld_a2d_sac_psi_safe_explore`、`realworld_a2d_sac_psi` 仍然保留为兼容 alias。
 
 最关键的是 `node_groups` 里的 `A2D` hardware：
 
@@ -110,7 +118,7 @@ cluster:
 在 Ray 集群就绪后，于 head 节点执行：
 
 ```bash
-python examples/embodiment/train_embodied_agent.py --config-name realworld_a2d_sac_psi_async
+python examples/embodiment/train_embodied_agent.py --config-name realworld_a2d_sac_psi_direct_async
 ```
 
 如果只想验证配置链路，可先使用 dummy 配置：
@@ -142,8 +150,32 @@ A2D env 会在发送给 controller 前补上前 2 个 waist 维度，形成 cont
 RLinf 侧现在只保留 absolute-action 语义：
 
 - 策略输出直接是绝对关节目标
-- `action_low/action_high` 用来定义动作空间与可选 clipping
+- `env.*.override_cfg.safe_box.low/high` 定义 policy-space 26 维 joint box
+- `safe_box.enabled=true` 时自动启用 joint clipping
+- 旧 `action_low/action_high/clip_policy_actions` 仍然兼容，但内部会统一折叠到 `safe_box`
 - 不再支持 `[-1, 1] -> controller range` 的环境内二次缩放
+
+## 6.1 rollout action execution 配置
+
+psi-policy 的“完整 horizon 预测”和“真正执行哪几步动作”现在已经解耦。实验切换主要改：
+
+```yaml
+actor:
+  model:
+    num_action_chunks: 4   # RL macro step / env 每次 chunk_step 真正执行 4 步
+
+rollout:
+  action_execution:
+    mode: direct | rtc | window_blend
+    noise_stage: pre_smooth
+    reset_on_episode_end: true
+    rtc:
+      search_window: 4
+      merge_weight_base: 0.8
+    window:
+      window_size: 8
+      overlap_steps: 4
+```
 
 ## 7. 常见修改点
 

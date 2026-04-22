@@ -17,7 +17,7 @@ from __future__ import annotations
 import copy
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 import gymnasium as gym
 import numpy as np
@@ -61,6 +61,7 @@ class A2DRobotConfig:
 
     # Bounds for the policy-visible action space. When policy_action_dim == 26,
     # these exclude the 2 waist dims, which stay fixed inside the env.
+    safe_box: Optional[dict[str, Any]] = None
     clip_policy_actions: Optional[bool] = None
     action_low: Optional[list[float]] = None
     action_high: Optional[list[float]] = None
@@ -106,6 +107,48 @@ class A2DRobotConfig:
     success_state_key: Optional[str] = None
     success_threshold: float = 0.5
 
+    @dataclass
+    class SafeBox:
+        enabled: bool
+        low: list[float]
+        high: list[float]
+
+    def _resolve_safe_box(self) -> "A2DRobotConfig.SafeBox":
+        if self.safe_box is not None:
+            raw_safe_box = (
+                dict(self.safe_box)
+                if hasattr(self.safe_box, "items")
+                else self.safe_box
+            )
+            if not hasattr(raw_safe_box, "get"):
+                raise TypeError(
+                    f"safe_box must be a mapping when provided, got {type(self.safe_box)}."
+                )
+            enabled = bool(raw_safe_box.get("enabled", False))
+            low = raw_safe_box.get("low", None)
+            high = raw_safe_box.get("high", None)
+            if low is None or high is None:
+                raise ValueError("safe_box.low and safe_box.high must both be provided.")
+            return A2DRobotConfig.SafeBox(
+                enabled=enabled,
+                low=np.asarray(low, dtype=np.float32).tolist(),
+                high=np.asarray(high, dtype=np.float32).tolist(),
+            )
+
+        if self.clip_policy_actions is None:
+            raise ValueError(
+                "Either safe_box or clip_policy_actions must be provided explicitly for A2D."
+            )
+        if self.action_low is None or self.action_high is None:
+            raise ValueError(
+                "Either safe_box.low/high or action_low/action_high must be provided explicitly for A2D."
+            )
+        return A2DRobotConfig.SafeBox(
+            enabled=bool(self.clip_policy_actions),
+            low=np.asarray(self.action_low, dtype=np.float32).tolist(),
+            high=np.asarray(self.action_high, dtype=np.float32).tolist(),
+        )
+
     def __post_init__(self) -> None:
         self.controller_port = int(self.controller_port)
         self.grpc_timeout_s = float(self.grpc_timeout_s)
@@ -115,13 +158,7 @@ class A2DRobotConfig:
         if self.policy_action_dim is None:
             raise ValueError("policy_action_dim must be provided explicitly for A2D.")
         self.policy_action_dim = int(self.policy_action_dim)
-        if self.clip_policy_actions is None:
-            raise ValueError("clip_policy_actions must be provided explicitly for A2D.")
-        self.clip_policy_actions = bool(self.clip_policy_actions)
-        if self.action_low is None or self.action_high is None:
-            raise ValueError(
-                "action_low and action_high must be provided explicitly for A2D."
-            )
+        resolved_safe_box = self._resolve_safe_box()
         if self.waist_action is not None:
             self.waist_action = np.asarray(
                 self.waist_action, dtype=np.float32
@@ -137,8 +174,15 @@ class A2DRobotConfig:
             self.reset_pose_frame_number = int(self.reset_pose_frame_number)
         self.reset_move_timeout_s = float(self.reset_move_timeout_s)
         self.reset_tolerance = float(self.reset_tolerance)
-        self.action_low = np.asarray(self.action_low, dtype=np.float32).tolist()
-        self.action_high = np.asarray(self.action_high, dtype=np.float32).tolist()
+        self.safe_box = {
+            "enabled": bool(resolved_safe_box.enabled),
+            "low": resolved_safe_box.low,
+            "high": resolved_safe_box.high,
+        }
+        # Keep legacy fields populated so older codepaths and configs still work.
+        self.clip_policy_actions = bool(resolved_safe_box.enabled)
+        self.action_low = list(resolved_safe_box.low)
+        self.action_high = list(resolved_safe_box.high)
         self.model_control_modes = [int(value) for value in self.model_control_modes]
         self.teleop_control_modes = [int(value) for value in self.teleop_control_modes]
         self.idle_control_modes = [int(value) for value in self.idle_control_modes]
@@ -327,8 +371,8 @@ class A2DEnv(gym.Env):
         return robot_state
 
     def _init_action_obs_spaces(self) -> None:
-        action_low = np.asarray(self.config.action_low, dtype=np.float32)
-        action_high = np.asarray(self.config.action_high, dtype=np.float32)
+        action_low = np.asarray(self.config.safe_box["low"], dtype=np.float32)
+        action_high = np.asarray(self.config.safe_box["high"], dtype=np.float32)
         self.action_space = gym.spaces.Box(action_low, action_high, dtype=np.float32)
 
         image_shapes = copy.deepcopy(self.config.image_shapes)
@@ -528,7 +572,13 @@ class A2DEnv(gym.Env):
     def step(self, action: np.ndarray):
         start_time = time.time()
         action = np.asarray(action, dtype=np.float32).reshape(-1)
-        if self.config.clip_policy_actions:
+        safe_box = getattr(self.config, "safe_box", None)
+        clip_policy_actions = (
+            bool(safe_box.get("enabled", False))
+            if hasattr(safe_box, "get")
+            else bool(getattr(self.config, "clip_policy_actions", False))
+        )
+        if clip_policy_actions:
             action = np.clip(action, self.action_space.low, self.action_space.high)
 
         if not self.config.is_dummy:

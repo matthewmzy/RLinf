@@ -67,6 +67,7 @@ class EnvOutput:
     intervene_flags: Optional[torch.Tensor] = None  # [B]
     transition_valids: Optional[torch.Tensor] = None  # [B]
     episode_intervened: Optional[torch.Tensor] = None  # [B]
+    execution_reset_mask: Optional[torch.Tensor] = None  # [B]
 
     def __post_init__(self):
         self.obs = put_tensor_device(self.obs, "cpu")
@@ -83,6 +84,7 @@ class EnvOutput:
         self.intervene_flags = _to_cpu_tensor(self.intervene_flags)
         self.transition_valids = _to_cpu_tensor(self.transition_valids)
         self.episode_intervened = _to_cpu_tensor(self.episode_intervened)
+        self.execution_reset_mask = _to_cpu_tensor(self.execution_reset_mask)
         if self.transition_valids is not None and self.transition_valids.dim() == 1:
             self.transition_valids = self.transition_valids.unsqueeze(-1)
 
@@ -227,6 +229,11 @@ class EnvOutput:
             allow_partial_none=True,
             fill_value=True,
         )
+        merged_execution_reset_mask = _merge_optional_tensor_field(
+            "execution_reset_mask",
+            allow_partial_none=True,
+            fill_value=False,
+        )
         # turn to EnvOutput and turn to dict to call post init for tensor processing
         return EnvOutput(
             obs=merged_obs,
@@ -238,6 +245,7 @@ class EnvOutput:
             intervene_actions=merged_intervene_actions,
             intervene_flags=merged_intervene_flags,
             transition_valids=merged_transition_valids,
+            execution_reset_mask=merged_execution_reset_mask,
         ).to_dict()
 
     def to_dict(self) -> dict[str, Any]:
@@ -257,6 +265,7 @@ class EnvOutput:
         env_output_dict["intervene_flags"] = self.intervene_flags
         env_output_dict["transition_valids"] = self.transition_valids
         env_output_dict["episode_intervened"] = self.episode_intervened
+        env_output_dict["execution_reset_mask"] = self.execution_reset_mask
 
         return env_output_dict
 

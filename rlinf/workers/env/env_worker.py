@@ -334,6 +334,12 @@ class EnvWorker(Worker):
                 intervene_actions = infos["final_info"]["intervene_action"]
                 intervene_flags = infos["final_info"]["intervene_flag"]
 
+        execution_reset_mask = torch.zeros(
+            chunk_dones.shape[0], dtype=torch.bool
+        )
+        if self.cfg.env.train.auto_reset:
+            execution_reset_mask = chunk_dones.any(dim=-1).to(dtype=torch.bool)
+
         env_output = EnvOutput(
             obs=extracted_obs,
             final_obs=infos["final_observation"]
@@ -349,6 +355,7 @@ class EnvWorker(Worker):
             episode_intervened=infos["episode_intervened"]
             if "episode_intervened" in infos
             else None,
+            execution_reset_mask=execution_reset_mask,
         )
         return env_output, env_info
 
@@ -387,11 +394,18 @@ class EnvWorker(Worker):
                 for key in final_info["episode"]:
                     env_info[key] = final_info["episode"][key][chunk_dones[:, -1]].cpu()
 
+        execution_reset_mask = torch.zeros(
+            chunk_dones.shape[0], dtype=torch.bool
+        )
+        if self.cfg.env.eval.auto_reset:
+            execution_reset_mask = chunk_dones.any(dim=-1).to(dtype=torch.bool)
+
         env_output = EnvOutput(
             obs=extracted_obs,
             final_obs=infos["final_observation"]
             if "final_observation" in infos
             else None,
+            execution_reset_mask=execution_reset_mask,
         )
         return env_output, env_info
 
@@ -639,6 +653,9 @@ class EnvWorker(Worker):
                     intervene_actions=None,
                     intervene_flags=None,
                     transition_valids=None,
+                    execution_reset_mask=torch.zeros(
+                        self.train_num_envs_per_stage, dtype=torch.bool
+                    ),
                 )
                 env_outputs.append(env_output)
         else:
@@ -656,6 +673,9 @@ class EnvWorker(Worker):
                     intervene_actions=self.last_intervened_info_list[stage_id][0],
                     intervene_flags=self.last_intervened_info_list[stage_id][1],
                     transition_valids=None,
+                    execution_reset_mask=torch.zeros(
+                        self.train_num_envs_per_stage, dtype=torch.bool
+                    ),
                 )
                 env_outputs.append(env_output)
 
@@ -719,6 +739,7 @@ class EnvWorker(Worker):
                     {
                         "obs": env_batch["obs"],
                         "final_obs": env_batch["final_obs"],
+                        "execution_reset_mask": env_batch["execution_reset_mask"],
                         "rollout_stop": False,
                     },
                 )
@@ -777,6 +798,7 @@ class EnvWorker(Worker):
                         {
                             "obs": env_batch["obs"],
                             "final_obs": env_batch["final_obs"],
+                            "execution_reset_mask": env_batch["execution_reset_mask"],
                             "rollout_stop": rollout_stop,
                         },
                     )
@@ -877,6 +899,7 @@ class EnvWorker(Worker):
                         {
                             "obs": env_batch["obs"],
                             "final_obs": env_batch["final_obs"],
+                            "execution_reset_mask": env_batch["execution_reset_mask"],
                         },
                         mode="eval",
                     )
@@ -909,6 +932,7 @@ class EnvWorker(Worker):
                         {
                             "obs": env_batch["obs"],
                             "final_obs": env_batch["final_obs"],
+                            "execution_reset_mask": env_batch["execution_reset_mask"],
                         },
                         mode="eval",
                     )

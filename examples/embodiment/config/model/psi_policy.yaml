@@ -17,7 +17,9 @@ add_q_head: True
 num_q_heads: 2
 q_hidden_dims: [256, 256, 256]
 
-# Exploration noise (keep A2D real-robot startup conservative by default)
+# Exploration noise
+# - noise_std_train: SAC actor sampling noise during learner-side training
+# - noise_std_rollout: default rollout noise used when rollout.model does not override it
 noise_std_train: 0.05
 noise_std_rollout: 0.005
 
@@ -31,7 +33,9 @@ rl_action_mask:
   active_groups: ["all"]
   active_indices: []
 
-# Action chunking (execute 4 of 16 predicted steps)
+# Action chunking
+# - action_horizon: full psi-policy prediction horizon
+# - num_action_chunks: RL macro action size / env execute_step per chunk_step
 num_action_chunks: 4
 use_chunk_rl: False
 

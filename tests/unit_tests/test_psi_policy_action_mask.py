@@ -282,6 +282,38 @@ def test_predict_action_batch_stores_full_chunk_actions_and_zero_noise_logprobs(
     assert torch.allclose(result["shared_feature"], obs_feature)
 
 
+def test_predict_action_horizon_batch_returns_full_horizon_for_execution_adapter():
+    cfg = PsiPolicyConfig(action_horizon=4, num_action_chunks=2)
+    policy = _make_minimal_policy(cfg)
+    action_chunks = torch.arange(4 * cfg.action_dim, dtype=torch.float32).reshape(
+        1, 4, cfg.action_dim
+    )
+    obs_feature = torch.arange(8, dtype=torch.float32).reshape(1, 8)
+
+    policy.preprocess_env_obs = lambda env_obs: env_obs
+    policy.encode_obs = lambda obs: (torch.zeros(1, 1, 8), obs_feature)
+    policy._sample_action_chunks = lambda cond_tokens, training: action_chunks
+    policy._sample_masked_action_chunks = lambda mean, noise_std: mean
+    policy._apply_reset_pose_mask = lambda action, env_obs: action
+    policy.cfg.noise_std_rollout = 0.0
+
+    rollout_prediction = policy.predict_action_horizon_batch(
+        {
+            "main_images": torch.zeros(1, 2, 2, 3),
+            "states": torch.zeros(1, 28),
+        },
+        return_shared_feature=True,
+    )
+
+    assert torch.allclose(rollout_prediction["action_horizon"], action_chunks)
+    assert torch.allclose(rollout_prediction["model_action_horizon"], action_chunks)
+    assert torch.allclose(
+        rollout_prediction["action_chunks_mean_norm"], action_chunks
+    )
+    assert torch.allclose(rollout_prediction["action_chunks_norm"], action_chunks)
+    assert torch.allclose(rollout_prediction["shared_feature"], obs_feature)
+
+
 def test_sync_runtime_cfg_from_checkpoint_updates_horizon_and_image_size():
     cfg = PsiPolicyConfig(obs_horizon=1, action_horizon=16, num_action_chunks=4, image_size=224)
     policy = _make_minimal_policy(cfg)
@@ -328,45 +360,3 @@ def test_default_forward_uses_recorded_actions_when_recomputing_logprobs():
     assert output["logprobs"].shape == (1, cfg.num_action_chunks, cfg.action_dim)
     assert output["entropy"].shape == (1, cfg.num_action_chunks, cfg.action_dim)
     assert torch.count_nonzero(output["logprobs"]) == 0
-
-
-def test_predict_action_batch_rollout_rtc_matches_client_chunking_semantics():
-    cfg = PsiPolicyConfig(
-        action_horizon=6,
-        num_action_chunks=2,
-        rollout_rtc_enabled=True,
-        rollout_rtc_execute_step=2,
-    )
-    policy = _make_minimal_policy(cfg)
-    policy.preprocess_env_obs = lambda env_obs: env_obs
-    policy.encode_obs = lambda obs: (torch.zeros(1, 1, 8), torch.zeros(1, 8))
-    policy._sample_masked_action_chunks = lambda mean, noise_std: mean
-    policy._apply_reset_pose_mask = lambda action, env_obs: action
-    policy.cfg.noise_std_rollout = 0.0
-
-    first_prediction = torch.arange(6 * cfg.action_dim, dtype=torch.float32).reshape(
-        1, 6, cfg.action_dim
-    )
-    second_prediction = first_prediction + 1000.0
-    policy._sample_action_chunks = lambda cond_tokens, training: first_prediction
-
-    env_obs = {
-        "main_images": torch.zeros(1, 2, 2, 3),
-        "states": torch.zeros(1, 28),
-    }
-    first_chunk, first_result = policy.predict_action_batch(env_obs, return_obs=False)
-    assert torch.allclose(first_chunk, first_prediction[:, :2])
-    assert torch.count_nonzero(first_result["prev_logprobs"]) == 0
-
-    policy._sample_action_chunks = lambda cond_tokens, training: second_prediction
-    second_chunk, second_result = policy.predict_action_batch(env_obs, return_obs=False)
-
-    expected_second_chunk = torch.stack(
-        [
-            0.8 * first_prediction[0, 2] + 0.2 * second_prediction[0, 0],
-            0.4 * first_prediction[0, 3] + 0.6 * second_prediction[0, 1],
-        ],
-        dim=0,
-    ).unsqueeze(0)
-    assert torch.allclose(second_chunk, expected_second_chunk)
-    assert torch.count_nonzero(second_result["prev_logprobs"]) == 0
