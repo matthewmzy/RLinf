@@ -12,13 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Franka built-in two-finger gripper end-effector.
-
-This implementation delegates to the ``ROSController`` that is already
-set up by ``FrankaController``.  The ROS channel names are passed in at
-construction so that ``FrankaGripper`` does **not** create its own
-subscribers / publishers.
-"""
+"""Franka built-in two-finger gripper end-effector."""
 
 import time
 
@@ -31,16 +25,7 @@ from .base import EndEffector
 
 
 class FrankaGripper(EndEffector):
-    """Franka Emika Panda parallel-jaw gripper controlled via ROS topics.
-
-    Args:
-        ros_controller: A ``ROSController`` instance that is already
-            initialised inside the ``FrankaController`` worker.
-        binary_threshold: Threshold on the action value for binary
-            open / close decisions.
-        gripper_sleep: Time to wait after a gripper open / close command
-            so that the physical motion finishes.
-    """
+    """Franka Emika Panda parallel-jaw gripper controlled via ROS topics."""
 
     _NUM_DOFS = 1
 
@@ -55,18 +40,12 @@ class FrankaGripper(EndEffector):
         self._gripper_sleep = gripper_sleep
         self._logger = get_logger()
 
-        # State
         self._position: float = 0.0
         self._is_open: bool = False
 
-        # ROS channel names (initialised by ``_setup_channels``)
         self._move_channel = "/franka_gripper/move/goal"
         self._grasp_channel = "/franka_gripper/grasp/goal"
         self._state_channel = "/franka_gripper/joint_states"
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
 
     @property
     def action_dim(self) -> int:
@@ -85,10 +64,6 @@ class FrankaGripper(EndEffector):
         """Whether the gripper is currently open."""
         return self._is_open
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     def initialize(self) -> None:
         """Register ROS channels for the gripper."""
         from franka_gripper.msg import GraspActionGoal, MoveActionGoal
@@ -104,10 +79,6 @@ class FrankaGripper(EndEffector):
     def shutdown(self) -> None:
         """No special teardown required for the Franka gripper."""
 
-    # ------------------------------------------------------------------
-    # State
-    # ------------------------------------------------------------------
-
     def _on_state_msg(self, msg) -> None:
         """ROS callback for ``/franka_gripper/joint_states``."""
         self._position = float(np.sum(msg.position))
@@ -118,10 +89,6 @@ class FrankaGripper(EndEffector):
     def is_channel_active(self) -> bool:
         """Return ``True`` once the gripper state subscriber has received data."""
         return self._ros.get_input_channel_status(self._state_channel)
-
-    # ------------------------------------------------------------------
-    # Commands
-    # ------------------------------------------------------------------
 
     def open_gripper(self) -> None:
         """Open the gripper fully."""
@@ -149,16 +116,7 @@ class FrankaGripper(EndEffector):
         self._logger.debug("FrankaGripper: close")
 
     def command(self, action: np.ndarray) -> bool:
-        """Binary gripper control.
-
-        Args:
-            action: A 1-D array with a single element. Values
-                ``<= -threshold`` trigger a close; ``>= threshold`` trigger
-                an open.
-
-        Returns:
-            ``True`` if the gripper state changed.
-        """
+        """Binary gripper control."""
         value = float(action[0])
         if value <= -self._binary_threshold and self._is_open:
             self.close_gripper()

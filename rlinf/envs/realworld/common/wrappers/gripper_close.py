@@ -18,16 +18,18 @@ from gymnasium.spaces import Box
 
 
 class GripperCloseEnv(gym.ActionWrapper):
-    """Strip end-effector dimensions so the policy only outputs 6-D arm actions."""
+    """
+    Use this wrapper to task that requires the gripper to be closed
+    """
 
     def __init__(self, env):
         super().__init__(env)
         ub = self.env.action_space
-        self._inner_dim = ub.shape[0]
+        assert ub.shape == (7,)
         self.action_space = Box(ub.low[:6], ub.high[:6])
 
     def action(self, action: np.ndarray) -> np.ndarray:
-        new_action = np.zeros((self._inner_dim,), dtype=np.float32)
+        new_action = np.zeros((7,), dtype=np.float32)
         new_action[:6] = action.copy()
         return new_action
 

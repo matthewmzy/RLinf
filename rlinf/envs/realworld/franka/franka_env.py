@@ -50,19 +50,10 @@ class FrankaRobotConfig:
     gripper_type: Optional[str] = None
     gripper_connection: Optional[str] = None
     enable_camera_player: bool = True
-    camera_auto_exposure: bool = True
-    camera_exposure: Optional[float] = None
-    camera_gain: Optional[float] = None
     # Per-camera crop regions keyed by serial number.
     # Each value is [top%, left%, bottom%, right%] in 0..1 range.
     # Example: {"230322271990": [0.0, 0.15, 1.0, 0.85]}
     camera_crop_regions: Optional[dict[str, list[float]]] = None
-    # Unified RealSense camera config.
-    # Expected schema:
-    # camera_configs:
-    #   camera_defaults: {name, auto_exposure, exposure, gain, crop_region, resolution, fps, enable_depth}
-    #   overrides:
-    #     "<serial>": {name, auto_exposure, exposure, gain, crop_region, ...}
     camera_configs: Optional[dict[str, Any]] = None
 
     is_dummy: bool = False
@@ -213,10 +204,6 @@ class FrankaEnv(gym.Env):
         self._interpolate_move(self._reset_pose)
         time.sleep(1.0)
         self._franka_state = self._controller.get_state().wait()[0]
-
-        # Apply compliance params so impedance controller tracks target (e.g. SpaceMouse) correctly
-        # if self.config.compliance_param:
-        #     self._controller.reconfigure_compliance_params(self.config.compliance_param)
 
         # Init cameras
         self._open_cameras()
@@ -649,11 +636,6 @@ class FrankaEnv(gym.Env):
                     resolution=tuple(merged.get("resolution", (640, 480))),
                     fps=int(merged.get("fps", 15)),
                     enable_depth=bool(merged.get("enable_depth", False)),
-                    auto_exposure=bool(
-                        merged.get("auto_exposure", self.config.camera_auto_exposure)
-                    ),
-                    exposure=merged.get("exposure", self.config.camera_exposure),
-                    gain=merged.get("gain", self.config.camera_gain),
                     crop_region=tuple(crop_region) if crop_region is not None else None,
                 )
             )

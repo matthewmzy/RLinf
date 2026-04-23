@@ -71,15 +71,7 @@ def normalize_end_effector_type(
 
 
 class EndEffector(ABC):
-    """Abstract interface for a robot end-effector.
-
-    Every end-effector must expose its state and action dimensions so
-    that ``FrankaEnv`` can build the correct Gymnasium spaces dynamically.
-    """
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
+    """Abstract interface for a robot end-effector."""
 
     @property
     @abstractmethod
@@ -114,54 +106,25 @@ class EndEffector(ABC):
 
     @abstractmethod
     def get_state(self) -> np.ndarray:
-        """Return the current end-effector state as a 1-D array.
-
-        The length of the returned array must equal :pyattr:`state_dim`.
-        """
+        """Return the current end-effector state."""
 
     @property
     def finger_names(self) -> list[str]:
-        """Human-readable names for each DOF.
-
-        Subclasses may override this to provide meaningful labels.
-        The default returns generic names ``["dof_0", "dof_1", ...]``.
-        """
+        """Human-readable names for each DOF."""
         return [f"dof_{i}" for i in range(self.state_dim)]
 
     def get_detailed_state(self) -> dict:
-        """Return a detailed status dictionary for diagnostic purposes.
-
-        The default implementation wraps :meth:`get_state` into a dict.
-        Subclasses (e.g. dexterous hands) should override this to expose
-        per-motor velocity, current, error status, etc.
-        """
+        """Return a detailed status dictionary for diagnostics."""
         state = self.get_state()
         return {
             "positions": state.tolist(),
             "finger_names": self.finger_names,
         }
 
-    # ------------------------------------------------------------------
-    # Commands
-    # ------------------------------------------------------------------
-
     @abstractmethod
     def command(self, action: np.ndarray) -> bool:
-        """Send a command to the end-effector.
-
-        Args:
-            action: Action vector whose length equals :pyattr:`action_dim`.
-
-        Returns:
-            ``True`` if the command caused a meaningful state change
-            (e.g. gripper opened/closed), ``False`` otherwise.
-        """
+        """Send a command to the end-effector."""
 
     @abstractmethod
     def reset(self, target_state: np.ndarray | None = None) -> None:
-        """Reset the end-effector to a default or specified state.
-
-        Args:
-            target_state: Optional target state. If ``None``, reset to the
-                implementation-defined default.
-        """
+        """Reset the end-effector to a default or specified state."""
