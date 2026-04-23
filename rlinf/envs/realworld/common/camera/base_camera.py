@@ -32,9 +32,6 @@ class CameraInfo:
     resolution: tuple[int, int] = (640, 480)
     fps: int = 15
     enable_depth: bool = False
-    auto_exposure: bool = True
-    exposure: Optional[float] = None
-    gain: Optional[float] = None
     crop_region: Optional[tuple[float, float, float, float]] = None
 
 

@@ -15,7 +15,6 @@ else
     CONFIG_NAME=$1
 fi
 
-# Ensure DISPLAY is forwarded to Ray workers for camera preview window
 if [ -n "$DISPLAY" ]; then
     export RAY_RUNTIME_ENV_DISPLAY="$DISPLAY"
 fi
