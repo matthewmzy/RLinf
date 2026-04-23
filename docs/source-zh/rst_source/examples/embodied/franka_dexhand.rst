@@ -1,0 +1,78 @@
+Franka + 灵巧手真机强化学习
+================================
+
+本文档说明 Franka 机械臂接入睿研灵巧手时需要关注的配置差异。
+完整的真机强化学习与 reward model 工作流请参考 :doc:`franka` 和 :doc:`franka_reward_model`。
+
+.. contents:: 目录
+   :local:
+   :depth: 2
+
+总览
+----
+
+灵巧手方案沿用与 Franka 相同的真机强化学习和 reward model 工作流，主要差异集中在末端执行器、遥操作方式和动作空间：
+
+- 动作空间为 12 维
+- 前 6 维控制机械臂位姿增量
+- 后 6 维控制灵巧手关节
+- ``RuiyanHand`` 负责灵巧手硬件控制
+- ``DexHandIntervention`` 将 SpaceMouse 和数据手套输入组合为专家动作
+
+遥操作
+------
+
+灵巧手遥操作使用：
+
+- SpaceMouse 控制机械臂 6 维位姿
+- 数据手套控制 6 维手指动作
+- SpaceMouse 左键用于启用相对手套控制
+
+Reward Model
+------------
+
+reward model 侧与 :doc:`franka_reward_model` 中的 Franka 真机流程一致。
+
+对当前灵巧手抓放环境：
+
+- reward 图像默认沿用 ``env.main_image_key``
+- ``examples/embodiment/config/env/realworld_dex_pnp.yaml`` 中的 ``main_image_key`` 为 ``global``
+- ``examples/embodiment/config/realworld_dexpnp_rlpd_cnn_async.yaml`` 通过 ``reward`` 段接入 reward model
+
+配置文件
+--------
+
+数据采集使用 ``examples/embodiment/config/realworld_collect_dexhand_data.yaml``。
+该配置包含：
+
+- ``end_effector_type: "ruiyan_hand"``
+- 数据手套遥操作参数
+- ``data_collection``，用于以 ``pickle`` 格式导出原始 episode
+
+RL 训练使用 ``examples/embodiment/config/realworld_dexpnp_rlpd_cnn_async.yaml``。
+启动前需要填写：
+
+- ``robot_ip``
+- ``target_ee_pose``
+- 策略 ``model_path``
+- reward ``model.model_path``
+- ``end_effector_config`` 与 ``glove_config`` 中的串口参数
+
+工作流
+------
+
+1. 按照 :doc:`franka` 完成环境部署、依赖安装和 Ray 集群配置。
+2. 使用下面的入口采集专家 demo：
+
+   .. code-block:: bash
+
+      bash examples/embodiment/collect_data.sh realworld_collect_dexhand_data
+
+3. 使用同一个入口再次采集 reward 原始 episode；这一轮建议调大 ``env.eval.override_cfg.success_hold_steps``，并使用单独的日志目录。
+4. 按照 :doc:`franka_reward_model` 中的方法，用 ``examples/reward/preprocess_reward_dataset.py`` 生成 reward dataset。
+5. 使用 ``examples/reward/run_reward_training.sh`` 训练 reward model。
+6. 使用下面的命令启动 RL：
+
+   .. code-block:: bash
+
+      bash examples/embodiment/run_realworld_async.sh realworld_dexpnp_rlpd_cnn_async

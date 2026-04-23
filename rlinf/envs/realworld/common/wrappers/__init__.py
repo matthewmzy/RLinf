@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .apply import apply_dual_arm_wrappers, apply_single_arm_wrappers
+from .dexhand_intervention import DexHandIntervention
 from .dual_euler_obs import DualQuat2EulerWrapper
 from .dual_gello_intervention import DualGelloIntervention
 from .dual_relative_frame import DualRelativeFrame, DualRelativeTargetFrame
@@ -37,6 +38,7 @@ __all__ = [
     "GelloIntervention",
     "GripperCloseEnv",
     "KeyboardRewardDoneMultiStageWrapper",
+    "DexHandIntervention",
     "KeyboardRewardDoneWrapper",
     "LeaderFollowerKeyboardIntervention",
     "Quat2EulerWrapper",
