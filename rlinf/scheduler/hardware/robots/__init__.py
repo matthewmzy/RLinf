@@ -13,12 +13,18 @@
 # limitations under the License.
 
 from .a2d import A2DConfig, A2DHWInfo
+from .dosw1 import DOSW1HWConfig, DOSW1HWInfo
+from .dual_franka import DualFrankaConfig, DualFrankaHWInfo
 from .franka import FrankaConfig, FrankaHWInfo
 from .xsquare import Turtle2Config, Turtle2HWInfo
 
 __all__ = [
     "A2DConfig",
     "A2DHWInfo",
+    "DOSW1HWConfig",
+    "DOSW1HWInfo",
+    "DualFrankaConfig",
+    "DualFrankaHWInfo",
     "FrankaConfig",
     "FrankaHWInfo",
     "Turtle2Config",

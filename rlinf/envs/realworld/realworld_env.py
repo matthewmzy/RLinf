@@ -1,4 +1,4 @@
-# Copyright 2025 The RLinf Authors.
+# Copyright 2026 The RLinf Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@ import torch
 from filelock import FileLock
 from omegaconf import OmegaConf
 
+from rlinf.envs.realworld.venv import NoAutoResetSyncVectorEnv
 from rlinf.envs.realworld.common.wrappers import (
     GripperCloseEnv,
     KeyboardRewardDoneMultiStageWrapper,
@@ -34,7 +35,6 @@ from rlinf.envs.realworld.common.wrappers import (
     RelativeFrame,
     SpacemouseIntervention,
 )
-from rlinf.envs.realworld.venv import NoAutoResetSyncVectorEnv
 from rlinf.envs.utils import to_tensor
 from rlinf.scheduler import WorkerInfo
 
@@ -62,6 +62,9 @@ class RealWorldEnv(gym.Env):
         self.num_group = num_envs // cfg.group_size
         self.group_size = cfg.group_size
         self.main_image_key = cfg.main_image_key
+        self.manual_episode_control_only = bool(
+            self.override_cfg.get("manual_episode_control_only", False)
+        )
 
         self._init_env()
 
@@ -83,6 +86,7 @@ class RealWorldEnv(gym.Env):
             worker_info=worker_info,
             hardware_info=hardware_info,
             env_idx=env_idx,
+            env_cfg=self.cfg,
         )
         base_env = env.unwrapped if hasattr(env, "unwrapped") else env
         if self.cfg.get("no_gripper", True):
@@ -133,7 +137,17 @@ class RealWorldEnv(gym.Env):
             for env_idx in range(self.num_envs)
         ]
         self.env = NoAutoResetSyncVectorEnv(env_fns)
-        self.task_descriptions = list(self.env.call("task_description"))
+        self.task_descriptions = list(
+            self.env.call("get_wrapper_attr", "task_description")
+        )
+
+    @property
+    def action_space(self):
+        return self.env.action_space
+
+    @property
+    def observation_space(self):
+        return self.env.observation_space
 
     @property
     def total_num_group_envs(self):
@@ -180,10 +194,17 @@ class RealWorldEnv(gym.Env):
             self.intervened_once[:] = False
             self.intervened_steps[:] = 0
 
-    def _record_metrics(self, step_reward, terminations, intervene_current_step, infos):
+    def _record_metrics(
+        self,
+        step_reward,
+        terminations,
+        success_current_step,
+        intervene_current_step,
+        infos,
+    ):
         episode_info = {}
         self.returns += step_reward
-        success_flags = np.asarray(infos.get("success", terminations), dtype=bool).copy()
+        success_flags = np.asarray(infos.get("success", success_current_step), dtype=bool).copy()
         fail_flags = np.asarray(
             infos.get("fail", np.zeros(self.num_envs, dtype=bool)),
             dtype=bool,
@@ -249,16 +270,13 @@ class RealWorldEnv(gym.Env):
         full_states = np.concatenate(full_states, axis=-1)
         obs["states"] = full_states
 
-        # Process images
-        if self.main_image_key not in raw_obs["frames"]:
-            available_keys = list(raw_obs["frames"].keys())
+        frames = raw_obs["frames"]
+        if self.main_image_key not in frames:
             raise KeyError(
-                f"main_image_key '{self.main_image_key}' not found in raw_obs['frames']. "
-                f"Available keys: {available_keys}. "
-                f"Please set 'main_image_key' in your env config to one of the available keys."
+                f"main_image_key {self.main_image_key!r} not in {list(frames)}"
             )
-        obs["main_images"] = raw_obs["frames"][self.main_image_key]
-        raw_images = OrderedDict(raw_obs["frames"].items())
+        obs["main_images"] = frames[self.main_image_key]
+        raw_images = OrderedDict(sorted(frames.items()))
         raw_images.pop(self.main_image_key)
 
         if raw_images:
@@ -280,6 +298,13 @@ class RealWorldEnv(gym.Env):
 
         obs = self._wrap_obs(raw_obs)
         step_reward = self._calc_step_reward(_reward).copy()
+        timeout_truncations = self.elapsed_steps >= self.cfg.max_episode_steps
+        if not self.manual_episode_control_only:
+            truncations = timeout_truncations
+
+        obs = self._wrap_obs(raw_obs)
+        step_reward = self._calc_step_reward(_reward)
+        success_current_step = np.isclose(step_reward, 1.0)
         intervene_flag = np.zeros(self.num_envs, dtype=bool)
         if "intervene_action" in infos:
             for env_id in range(self.num_envs):
@@ -313,7 +338,13 @@ class RealWorldEnv(gym.Env):
         infos["fail"] = fail_flags
         infos["timeout_fail"] = timeout_fail
 
-        infos = self._record_metrics(step_reward, terminations, intervene_flag, infos)
+        infos = self._record_metrics(
+            step_reward,
+            terminations,
+            success_current_step,
+            intervene_flag,
+            infos,
+        )
         if self.ignore_terminations:
             infos["episode"]["success_at_end"] = to_tensor(terminations)
             terminations[:] = False
@@ -482,9 +513,11 @@ class RealWorldEnv(gym.Env):
         final_info = copy.deepcopy(infos)
         obs, infos = self.reset(
             env_idx=env_idx,
-            reset_state_ids=self.reset_state_ids[env_idx]
-            if self.use_fixed_reset_state_ids
-            else None,
+            reset_state_ids=(
+                self.reset_state_ids[env_idx]
+                if self.use_fixed_reset_state_ids
+                else None
+            ),
         )
         # gymnasium calls it final observation but it really is just o_{t+1} or the true next observation
         infos["final_observation"] = final_obs
