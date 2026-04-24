@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Compatibility shim for the moved RuiyanHand implementation."""
-
-from rlinf.envs.realworld.common.end_effectors.ruiyan_hand import RuiyanHand
+from rlinf.envs.realworld.common.hand.ruiyan_hand import RuiyanHand
 
 __all__ = ["RuiyanHand"]

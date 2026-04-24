@@ -18,9 +18,8 @@ from typing import Optional
 
 import numpy as np
 
+from rlinf.envs.realworld.common.end_effectors.base import EndEffector
 from rlinf.utils.logging import get_logger
-
-from .base import EndEffector
 
 
 class RuiyanHand(EndEffector):

@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Compatibility shim for the moved Franka end-effector package."""
-
 from rlinf.envs.realworld.common.end_effectors import (
     EndEffector,
     EndEffectorType,

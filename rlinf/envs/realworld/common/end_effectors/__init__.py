@@ -14,10 +14,6 @@
 
 """Shared hand backends and end-effector abstractions."""
 
-# Backward-compatible re-exports for older gripper import paths.
-from rlinf.envs.realworld.common.gripper import BaseGripper as BaseGripper
-from rlinf.envs.realworld.common.gripper import create_gripper as create_gripper
-
 from .base import EndEffector, EndEffectorType, normalize_end_effector_type
 
 __all__ = [
@@ -37,7 +33,7 @@ def create_end_effector(
         end_effector_type = EndEffectorType(end_effector_type)
 
     if end_effector_type == EndEffectorType.RUIYAN_HAND:
-        from .ruiyan_hand import RuiyanHand
+        from rlinf.envs.realworld.common.hand import RuiyanHand
 
         return RuiyanHand(**kwargs)
 

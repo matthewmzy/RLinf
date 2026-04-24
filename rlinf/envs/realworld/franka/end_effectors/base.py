@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Compatibility shim for the moved end-effector base types."""
-
 from rlinf.envs.realworld.common.end_effectors.base import (
     EndEffector,
     EndEffectorType,

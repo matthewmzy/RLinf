@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Compatibility shim for the canonical Franka gripper backend."""
-
 from rlinf.envs.realworld.common.gripper.franka_gripper import FrankaGripper
 
 __all__ = ["FrankaGripper"]

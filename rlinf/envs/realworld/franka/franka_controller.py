@@ -127,7 +127,6 @@ class FrankaController(Worker):
         # Franka state
         self._state = FrankaRobotState()
         self._end_effector: EndEffector | None = None
-        # Gripper logic stays under the dedicated common.gripper package.
         self._gripper = None
 
         # ROS controller (arm channels only)
