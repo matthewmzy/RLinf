@@ -1,4 +1,4 @@
-# Copyright 2026 The RLinf Authors.
+# Copyright 2025 The RLinf Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Robotiq 2F gripper via direct Modbus RTU over USB-RS485."""
+"""Robotiq 2F-85 / 2F-140 gripper via direct Modbus RTU over USB-RS485.
+
+No ROS dependency — communicates with the gripper through ``pymodbus``
+and a USB-RS485 adapter (e.g. ``/dev/ttyUSB0``).
+
+Modbus register map (Robotiq 2F series)
+---------------------------------------
+**Output registers** (FC 16, base address 0x03E8):
+
+====== ========= ===========================================
+Byte   Register  Description
+====== ========= ===========================================
+0      reg0 hi   Action request: rACT(0) rGTO(3) rATR(4)
+1      reg0 lo   Reserved
+2      reg1 hi   Reserved
+3      reg1 lo   rPR — position request  (0=open, 255=closed)
+4      reg2 hi   rSP — speed             (0=min,  255=max)
+5      reg2 lo   rFR — force             (0=min,  255=max)
+====== ========= ===========================================
+
+**Input registers** (FC 03, base address 0x07D0):
+
+====== ========= ===========================================
+Byte   Register  Description
+====== ========= ===========================================
+0      reg0 hi   Status: gACT(0) gGTO(3) gSTA(4-5) gOBJ(6-7)
+1      reg0 lo   Reserved
+2      reg1 hi   gFLT — fault status
+3      reg1 lo   gPR  — position request echo
+4      reg2 hi   gPO  — actual position  (0=open, 255=closed)
+5      reg2 lo   gCU  — motor current    (×10 mA)
+====== ========= ===========================================
+"""
 
 import inspect
 import time
@@ -24,10 +56,13 @@ from rlinf.utils.logging import get_logger
 
 from .base_gripper import BaseGripper
 
+# Modbus constants
 _SLAVE_ID = 0x09
-_OUTPUT_REG_ADDR = 0x03E8
-_INPUT_REG_ADDR = 0x07D0
+_OUTPUT_REG_ADDR = 0x03E8  # base address for output (write) registers
+_INPUT_REG_ADDR = 0x07D0  # base address for input (read) registers
 _NUM_REGS = 3
+
+# Action-request bit positions (within the high byte of register 0)
 _rACT = 1 << 0
 _rGTO = 1 << 3
 
@@ -50,7 +85,15 @@ def _create_modbus_client(port: str, baudrate: int = 115200):
 
 
 class RobotiqGripper(BaseGripper):
-    """Robotiq 2F-85 / 2F-140 controlled via Modbus RTU over USB-RS485."""
+    """Robotiq 2F-85 / 2F-140 controlled via Modbus RTU over USB-RS485.
+
+    Args:
+        port: Serial device path, e.g. ``"/dev/ttyUSB0"``.
+        baudrate: Modbus baud rate (default 115200).
+        slave_id: Modbus slave address (default 0x09).
+        max_width: Physical opening of the fully-open gripper in metres.
+            0.085 for the 2F-85, 0.140 for the 2F-140.
+    """
 
     def __init__(
         self,
@@ -67,13 +110,14 @@ class RobotiqGripper(BaseGripper):
         self._client = _create_modbus_client(port, baudrate)
         self._client.connect()
 
+        # pymodbus >=3.10 renamed "slave" to "device_id"
         sig = inspect.signature(self._client.write_registers)
         if "device_id" in sig.parameters:
             self._slave_kwarg = "device_id"
         else:
             self._slave_kwarg = "slave"
 
-        self._cached_position: int = 0
+        self._cached_position: int = 0  # raw 0-255
         self._is_open_flag: bool = True
         self._activated: bool = False
 
@@ -82,6 +126,8 @@ class RobotiqGripper(BaseGripper):
             f"Robotiq gripper activated on {port} "
             f"(slave=0x{slave_id:02X}, max_width={max_width}m)"
         )
+
+    # ── BaseGripper interface ────────────────────────────────────────
 
     def open(self, speed: float = 0.3) -> None:
         self._goto(position=0, speed=speed, force=0.0)
@@ -97,6 +143,7 @@ class RobotiqGripper(BaseGripper):
 
     @property
     def position(self) -> float:
+        """Current opening width in metres (consistent with Franka convention)."""
         status = self._read_status()
         if status is not None:
             self._cached_position = status["position"]
@@ -112,11 +159,18 @@ class RobotiqGripper(BaseGripper):
     def cleanup(self) -> None:
         self._client.close()
 
+    # ── Modbus helpers ───────────────────────────────────────────────
+
     def _activate(self) -> None:
+        """Run the Robotiq activation sequence (clear → activate → wait)."""
+        # 1. Clear (deactivate)
         self._write_output_regs(0x0000, 0x0000, 0x0000)
         time.sleep(0.5)
+
+        # 2. Activate (rACT = 1)
         self._write_output_regs(_rACT << 8, 0x0000, 0x0000)
 
+        # 3. Wait for gSTA == 0x03 (fully activated)
         for _ in range(50):
             time.sleep(0.1)
             status = self._read_status()
@@ -129,12 +183,22 @@ class RobotiqGripper(BaseGripper):
         )
 
     def _goto(self, position: int, speed: float, force: float) -> None:
+        """Send a go-to-position command.
+
+        Args:
+            position: Raw target position (0 = open, 255 = closed).
+            speed: Normalised speed [0, 1].
+            force: Normalised force [0, 1].
+        """
         pos = int(np.clip(position, 0, 255))
         spd = int(np.clip(speed * 255, 0, 255))
         frc = int(np.clip(force * 255, 0, 255))
 
+        # Reg 0: (action_byte << 8) | reserved
         reg0 = (_rACT | _rGTO) << 8
+        # Reg 1: (reserved << 8) | position
         reg1 = pos
+        # Reg 2: (speed << 8) | force
         reg2 = (spd << 8) | frc
         self._write_output_regs(reg0, reg1, reg2)
 
@@ -146,6 +210,7 @@ class RobotiqGripper(BaseGripper):
         )
 
     def _read_status(self) -> Optional[dict]:
+        """Read the three input registers and decode the status fields."""
         resp = self._client.read_holding_registers(
             address=_INPUT_REG_ADDR,
             count=_NUM_REGS,

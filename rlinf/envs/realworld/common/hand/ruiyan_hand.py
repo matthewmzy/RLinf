@@ -12,18 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Ruiyan dexterous five-finger hand end-effector."""
+"""Ruiyan dexterous five-finger hand end-effector.
+
+This is a thin wrapper that delegates to the ``rlinf_dexhand``
+package (``pip install RLinf-dexterous-hands``) and adapts it to the
+:class:`EndEffector` interface used by the Franka env.
+"""
 
 from typing import Optional
 
 import numpy as np
 
-from rlinf.envs.realworld.common.end_effectors.base import EndEffector
+from rlinf.envs.realworld.franka.end_effectors.base import EndEffector
 from rlinf.utils.logging import get_logger
 
 
 class RuiyanHand(EndEffector):
-    """Thin wrapper around ``rlinf_dexhand``."""
+    """Ruiyan dexterous hand — thin wrapper around ``rlinf_dexhand``.
+
+    Install the driver package first::
+
+        pip install RLinf-dexterous-hands
+
+    Args:
+        port: Serial device path, e.g. ``"/dev/ttyUSB0"``.
+        baudrate: Serial baudrate (default 460800).
+        motor_ids: Tuple of motor IDs corresponding to the 6 fingers.
+        default_velocity: Default command velocity for all motors.
+        default_current: Default command current for all motors.
+        default_state: Default hand state used during ``reset()``.
+    """
 
     _NUM_DOFS = 6
     _FINGER_NAMES = [
@@ -56,6 +74,10 @@ class RuiyanHand(EndEffector):
         )
         self._logger = get_logger()
 
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
     @property
     def action_dim(self) -> int:
         return self._NUM_DOFS
@@ -77,6 +99,10 @@ class RuiyanHand(EndEffector):
         """Return detailed per-motor diagnostic information."""
         return self._driver.get_detailed_state()
 
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     def initialize(self) -> None:
         """Open the serial port and start the background control loop."""
         self._driver.initialize()
@@ -85,9 +111,17 @@ class RuiyanHand(EndEffector):
         """Stop the background loop and close the serial port."""
         self._driver.shutdown()
 
+    # ------------------------------------------------------------------
+    # State
+    # ------------------------------------------------------------------
+
     def get_state(self) -> np.ndarray:
         """Return the latest finger positions (normalised ``[0, 1]``)."""
         return self._driver.get_state()
+
+    # ------------------------------------------------------------------
+    # Commands
+    # ------------------------------------------------------------------
 
     def command(self, action: np.ndarray) -> bool:
         """Set target finger positions (normalised ``[0, 1]``)."""

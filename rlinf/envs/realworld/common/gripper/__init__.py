@@ -1,4 +1,4 @@
-# Copyright 2026 The RLinf Authors.
+# Copyright 2025 The RLinf Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,8 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-"""Shared gripper backends for real-world Franka environments."""
 
 from typing import Optional
 
@@ -30,7 +28,16 @@ def create_gripper(
     port: Optional[str] = None,
     **kwargs,
 ) -> BaseGripper:
-    """Factory that instantiates the right gripper backend."""
+    """Factory that instantiates the right gripper backend.
+
+    Args:
+        gripper_type: ``"franka"`` (ROS-based) or ``"robotiq"`` (Modbus RTU).
+        ros: :class:`ROSController` instance — required for ``"franka"``.
+        port: Serial device path (e.g. ``"/dev/ttyUSB0"``) — required for
+            ``"robotiq"``.
+        **kwargs: Forwarded to the gripper constructor (e.g. ``max_width``,
+            ``baudrate``, ``slave_id``).
+    """
     gt = gripper_type.lower()
     if gt == "robotiq":
         if port is None:
@@ -41,7 +48,6 @@ def create_gripper(
         from .robotiq_gripper import RobotiqGripper
 
         return RobotiqGripper(port=port, **kwargs)
-
     if gt == "franka":
         if ros is None:
             raise ValueError(
@@ -50,8 +56,7 @@ def create_gripper(
         from .franka_gripper import FrankaGripper
 
         return FrankaGripper(ros=ros, **kwargs)
-
     raise ValueError(
         f"Unsupported gripper_type={gripper_type!r}. "
-        "Supported types: 'franka', 'robotiq'."
+        f"Supported types: 'franka', 'robotiq'."
     )

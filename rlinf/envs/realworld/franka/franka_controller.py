@@ -20,30 +20,20 @@ import numpy as np
 import psutil
 from scipy.spatial.transform import Rotation as R
 
-from rlinf.envs.realworld.common.end_effectors import (
+from rlinf.scheduler import Cluster, NodePlacementStrategy, Worker
+from rlinf.utils.logging import get_logger
+
+from .end_effectors import (
     EndEffector,
     EndEffectorType,
     create_end_effector,
     normalize_end_effector_type,
 )
-from rlinf.envs.realworld.common.gripper import create_gripper
-from rlinf.scheduler import Cluster, NodePlacementStrategy, Worker
-from rlinf.utils.logging import get_logger
-
 from .franka_robot_state import FrankaRobotState
 
 
 class FrankaController(Worker):
-    """Franka robot arm controller.
-
-    Args:
-        robot_ip: IP address of the Franka robot.
-        ros_pkg: ROS package name for the Franka controllers.
-        end_effector_type: Active end-effector type.
-        end_effector_config: Extra kwargs forwarded to the end-effector.
-        gripper_type: Legacy gripper type kept for backward compatibility.
-        gripper_connection: Serial port for Robotiq grippers.
-    """
+    """Franka robot arm controller."""
 
     @staticmethod
     def launch_controller(
@@ -57,23 +47,7 @@ class FrankaController(Worker):
         gripper_type: Optional[str] = None,
         gripper_connection: Optional[str] = None,
     ):
-        """Launch a FrankaController on the specified worker's node.
-
-        Args:
-            robot_ip: The IP address of the robot arm.
-            env_idx: The index of the environment.
-            node_rank: The rank of the node to launch the controller on.
-            worker_rank: The rank of the env worker the controller is
-                associated with.
-            ros_pkg: The ROS package name for the Franka controllers.
-            end_effector_type: Active end-effector type.
-            end_effector_config: Extra kwargs forwarded to the end-effector.
-            gripper_type: Legacy gripper type kept for backward compatibility.
-            gripper_connection: Serial port for Robotiq grippers.
-
-        Returns:
-            FrankaController: The launched controller instance.
-        """
+        """Launch a FrankaController on the specified worker's node."""
         cluster = Cluster()
         placement = NodePlacementStrategy(node_ranks=[node_rank])
         return FrankaController.create_group(
@@ -107,10 +81,7 @@ class FrankaController(Worker):
             gripper_type,
         )
 
-        # Lazy-import ROS packages so that the module can be imported on
-        # machines without ROS (e.g. a GPU server that only runs the env
-        # worker). The controller itself always runs on the NUC where ROS
-        # is installed.
+        # Lazy-import ROS packages so the module can be imported on non-ROS nodes.
         import geometry_msgs.msg as geom_msg
         import rospy
         from dynamic_reconfigure.client import Client as ReconfClient
@@ -124,26 +95,20 @@ class FrankaController(Worker):
         self._ZeroJacobian = ZeroJacobian
         self._ReconfClient = ReconfClient
 
-        # Franka state
         self._state = FrankaRobotState()
         self._end_effector: EndEffector | None = None
         self._gripper = None
 
-        # ROS controller (arm channels only)
         from rlinf.envs.realworld.common.ros import ROSController
 
         self._ros = ROSController()
         self._init_ros_channels()
         self._init_end_effector(end_effector_config or {}, gripper_connection)
 
-        # roslaunch processes
         self._impedance: psutil.Process | None = None
         self._joint: psutil.Process | None = None
 
-        # Start impedance control
         self.start_impedance()
-
-        # Start reconfigure client
         self._reconf_client = self._ReconfClient(
             "cartesian_impedance_controllerdynamic_reconfigure_compliance_param_node"
         )
@@ -154,6 +119,8 @@ class FrankaController(Worker):
         gripper_connection: Optional[str],
     ) -> None:
         if self._end_effector_type.is_gripper:
+            from rlinf.envs.realworld.common.gripper import create_gripper
+
             self._gripper = create_gripper(
                 gripper_type=self._end_effector_type.gripper_backend,
                 ros=self._ros,
@@ -177,10 +144,7 @@ class FrankaController(Worker):
         )
 
     def _init_ros_channels(self):
-        """Initialize ROS channels for arm communication.
-
-        Gripper or hand channels are set up by the active end-effector.
-        """
+        """Initialize ROS channels for arm communication."""
         self._arm_equilibrium_channel = (
             "/cartesian_impedance_controller/equilibrium_pose"
         )
@@ -209,8 +173,6 @@ class FrankaController(Worker):
             self._on_arm_state_msg,
         )
 
-    # ── ROS callbacks (arm only) ─────────────────────────────────────
-
     def _on_arm_jacobian_msg(self, msg):
         self._state.arm_jacobian = np.array(list(msg.zero_jacobian)).reshape(
             (6, 7), order="F"
@@ -236,26 +198,19 @@ class FrankaController(Worker):
                 exc,
             )
 
-    # ── Public API ───────────────────────────────────────────────────
-
     def reconfigure_compliance_params(self, params: dict[str, float]):
         self._reconf_client.update_configuration(params)
         self.log_debug(f"Reconfigure compliance parameters: {params}")
 
     def is_robot_up(self) -> bool:
-        """Check if the arm state channel and the active end-effector are ready."""
+        """Check whether the arm and active end-effector are ready."""
         arm_ok = self._ros.get_input_channel_status(self._arm_state_channel)
         if self._end_effector_type.is_gripper:
             return arm_ok and self._gripper.is_ready()
         return arm_ok
 
     def get_state(self) -> FrankaRobotState:
-        """Get the current state of the Franka robot.
-
-        For grippers, the position and open/closed flag are synced from the
-        gripper object each time this method is called. For dexterous hands,
-        ``hand_position`` is synced from the active end-effector.
-        """
+        """Get the current state of the Franka robot."""
         if self._end_effector_type.is_gripper:
             self._state.gripper_position = self._gripper.position
             self._state.gripper_open = self._gripper.is_open
@@ -265,15 +220,8 @@ class FrankaController(Worker):
             self._state.hand_position = self._end_effector.get_state()
         return self._state
 
-    # ── Impedance / joint control ────────────────────────────────────
-
     def start_impedance(self):
-        """Start the impedance controller.
-
-        When using a non-Franka end-effector, ``load_gripper`` is set to
-        ``false`` so that the Franka controller does not attempt to manage
-        the built-in gripper.
-        """
+        """Start the impedance controller."""
         load_gripper = (
             "true"
             if self._end_effector_type == EndEffectorType.FRANKA_GRIPPER
@@ -305,11 +253,7 @@ class FrankaController(Worker):
         self._ros.put_channel(self._arm_reset_channel, self._ErrorRecoveryActionGoal())
 
     def reset_joint(self, reset_pos: list[float]):
-        """Reset the joint positions of the robot arm.
-
-        Args:
-            reset_pos: Desired joint positions (7-DOF).
-        """
+        """Reset the joint positions of the robot arm."""
         self.stop_impedance()
         self.clear_errors()
         self._wait_robot()
@@ -346,14 +290,8 @@ class FrankaController(Worker):
         self.clear_errors()
         self.start_impedance()
 
-    # ── Arm movement ─────────────────────────────────────────────────
-
     def move_arm(self, position: np.ndarray):
-        """Move the robot arm to the desired position.
-
-        Args:
-            position: 7-D array ``[x, y, z, qx, qy, qz, qw]``.
-        """
+        """Move the robot arm to the desired position."""
         assert len(position) == 7, (
             f"Invalid position, expected 7 dimensions but got {len(position)}"
         )
@@ -394,8 +332,6 @@ class FrankaController(Worker):
         assert self._end_effector is not None
         self._end_effector.reset(target_state)
 
-    # ── Gripper / end-effector helpers ───────────────────────────────
-
     def open_gripper(self):
         if self._end_effector_type.is_gripper:
             self._gripper.open()
@@ -415,8 +351,6 @@ class FrankaController(Worker):
         if self._end_effector_type.is_gripper:
             self._gripper.move(position, speed)
         self.log_debug(f"Move gripper to position: {position}")
-
-    # ── Internals ────────────────────────────────────────────────────
 
     def _wait_robot(self, sleep_time: int = 1):
         time.sleep(sleep_time)

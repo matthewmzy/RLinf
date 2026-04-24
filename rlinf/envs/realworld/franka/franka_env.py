@@ -1,4 +1,4 @@
-# Copyright 2026 The RLinf Authors.
+# Copyright 2025 The RLinf Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,10 +25,6 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 from rlinf.envs.realworld.common.camera import BaseCamera, CameraInfo, create_camera
-from rlinf.envs.realworld.common.end_effectors import (
-    EndEffectorType,
-    normalize_end_effector_type,
-)
 from rlinf.envs.realworld.common.video_player import VideoPlayer
 from rlinf.scheduler import (
     FrankaHWInfo,
@@ -36,6 +32,7 @@ from rlinf.scheduler import (
 )
 from rlinf.utils.logging import get_logger
 
+from .end_effectors.base import EndEffectorType, normalize_end_effector_type
 from .franka_robot_state import FrankaRobotState
 from .utils import (
     clip_euler_to_target_window,
@@ -216,6 +213,10 @@ class FrankaEnv(gym.Env):
         time.sleep(1.0)
         self._franka_state = self._controller.get_state().wait()[0]
 
+        # Apply compliance params so impedance controller tracks target (e.g. SpaceMouse) correctly
+        # if self.config.compliance_param:
+        #     self._controller.reconfigure_compliance_params(self.config.compliance_param)
+
         # Init cameras
         self._open_cameras()
         # Video player for displaying camera frames
@@ -310,20 +311,8 @@ class FrankaEnv(gym.Env):
 
         For dexterous hand (12-D action)::
 
-            [
-                x_delta,
-                y_delta,
-                z_delta,
-                rx_delta,
-                ry_delta,
-                rz_delta,
-                h1,
-                h2,
-                h3,
-                h4,
-                h5,
-                h6,
-            ]
+            [x_delta, y_delta, z_delta, rx_delta, ry_delta, rz_delta,
+             h1, h2, h3, h4, h5, h6]
         """
         start_time = time.time()
 
@@ -335,7 +324,7 @@ class FrankaEnv(gym.Env):
             self.next_position[:3] + xyz_delta * self.config.action_scale[0]
         )
 
-        is_end_effector_action_effective = True
+        is_ee_action_effective = True
         if not self.config.is_dummy:
             self.next_position[3:] = (
                 R.from_euler("xyz", action[3:6] * self.config.action_scale[1])
@@ -344,7 +333,7 @@ class FrankaEnv(gym.Env):
 
             # --- End-effector action ---
             ee_action = action[6:]
-            is_end_effector_action_effective = self._end_effector_action(ee_action)
+            is_ee_action_effective = self._end_effector_action(ee_action)
 
             self._move_action(self._clip_position_to_safety_box(self.next_position))
 
@@ -359,10 +348,7 @@ class FrankaEnv(gym.Env):
         observation = self._get_observation()
 
         # Calculate reward and update the internal hold counter
-        reward = self._calc_step_reward(
-            observation,
-            is_end_effector_action_effective,
-        )
+        reward = self._calc_step_reward(observation, is_ee_action_effective)
 
         # Logic to determine termination
         # The episode is done only if the robot has reached the target (reward == 1.0)
@@ -391,28 +377,21 @@ class FrankaEnv(gym.Env):
     def _calc_step_reward(
         self,
         observation: dict[str, np.ndarray | FrankaRobotState],
-        is_end_effector_action_effective: bool = False,
+        is_gripper_action_effective: bool = False,
     ) -> float:
         """Compute the reward for the current observation, namely the robot state and camera frames.
 
         Args:
             observation (Dict[str, np.ndarray]): The current observation from the environment.
-            is_end_effector_action_effective (bool): Whether the end-effector
-                action changed the current state.
+            is_gripper_action_effective (bool): Whether the gripper action was effective (i.e., the gripper state changed).
         """
-        should_apply_gripper_penalty = (
-            self.config.enable_gripper_penalty
-            and not self._is_hand
-            and is_end_effector_action_effective
-        )
-
         if self.config.use_reward_model:
             reward = self._compute_reward_model(observation)
             if reward >= 1.0:
                 self._success_hold_counter += 1
             else:
                 self._success_hold_counter = 0
-            if should_apply_gripper_penalty:
+            if self.config.enable_gripper_penalty and is_gripper_action_effective:
                 reward -= self.config.gripper_penalty
             return reward
 
@@ -446,7 +425,7 @@ class FrankaEnv(gym.Env):
                     f"Current reward={reward}",
                 )
 
-            if should_apply_gripper_penalty:
+            if self.config.enable_gripper_penalty and not self._is_hand and is_gripper_action_effective:
                 reward -= self.config.gripper_penalty
 
             return reward
@@ -538,7 +517,9 @@ class FrankaEnv(gym.Env):
 
         # Reset end-effector
         if self._is_hand:
-            self._controller.reset_end_effector(self.config.hand_reset_state).wait()
+            self._controller.reset_end_effector(
+                self.config.hand_reset_state
+            ).wait()
             self._last_hand_command = (
                 np.array(self.config.hand_reset_state, dtype=np.float64)
                 * self.config.hand_action_scale
@@ -775,15 +756,14 @@ class FrankaEnv(gym.Env):
                     camera._camera_info.name
                 ].shape[:2][::-1]
                 cropped_frame, resized_frame = self._crop_frame(
-                    frame,
-                    reshape_size,
+                    frame, reshape_size,
                     crop_region=camera._camera_info.crop_region,
                 )
                 frames[camera._camera_info.name] = resized_frame[
                     ..., ::-1
-                ]  # Convert BGR to RGB
+                ]  # Convert RGB to BGR
                 display_frames[camera._camera_info.name] = (
-                    resized_frame  # Original BGR frame for display
+                    resized_frame  # Original RGB for display
                 )
                 display_frames[f"{camera._camera_info.name}_full"] = (
                     cropped_frame  # Non-resized version
@@ -854,15 +834,14 @@ class FrankaEnv(gym.Env):
             return False
         else:
             # Continuous hand control
-            scaled = (
-                np.asarray(ee_action, dtype=np.float64) * self.config.hand_action_scale
-            )
+            scaled = np.asarray(ee_action, dtype=np.float64) * self.config.hand_action_scale
             if self._last_hand_command is not None:
                 delta = scaled - self._last_hand_command
                 max_d = self.config.hand_max_delta_per_step
                 scaled = self._last_hand_command + np.clip(delta, -max_d, max_d)
             self._last_hand_command = scaled.copy()
-            return bool(self._controller.command_end_effector(scaled).wait()[0])
+            self._controller.command_end_effector(scaled).wait()
+            return True
 
     def _interpolate_move(self, pose: np.ndarray, timeout: float = 1.5):
         num_steps = int(timeout * self.config.step_frequency)

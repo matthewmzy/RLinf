@@ -1,4 +1,4 @@
-# Copyright 2026 The RLinf Authors.
+# Copyright 2025 The RLinf Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Franka parallel-jaw gripper controlled via ROS topics."""
+"""Franka parallel-jaw gripper controlled via ROS topics.
+
+This module encapsulates the ROS channel setup and message publishing that
+were previously embedded in :class:`FrankaController`.
+"""
 
 import numpy as np
 
@@ -20,7 +24,18 @@ from .base_gripper import BaseGripper
 
 
 class FrankaGripper(BaseGripper):
-    """Franka Emika parallel-jaw gripper (ROS-based)."""
+    """Franka Emika parallel-jaw gripper (ROS-based).
+
+    Communication uses three ROS topics:
+
+    * ``/franka_gripper/move/goal``   – move to a given width
+    * ``/franka_gripper/grasp/goal``  – grasp with configurable force
+    * ``/franka_gripper/joint_states`` – finger-joint state feedback
+
+    Args:
+        ros: An initialised :class:`ROSController` instance (shared with the
+            arm controller).
+    """
 
     def __init__(self, ros):
         from franka_gripper.msg import GraspActionGoal, MoveActionGoal
@@ -32,7 +47,9 @@ class FrankaGripper(BaseGripper):
 
         self._position_value: float = 0.0
         self._is_open_flag: bool = True
+        self._is_ready_flag: bool = False
 
+        # ROS channels
         self._move_channel = "/franka_gripper/move/goal"
         self._grasp_channel = "/franka_gripper/grasp/goal"
         self._state_channel = "/franka_gripper/joint_states"
@@ -42,6 +59,8 @@ class FrankaGripper(BaseGripper):
         self._ros.connect_ros_channel(
             self._state_channel, JointState, self._on_state_msg
         )
+
+    # ── BaseGripper interface ────────────────────────────────────────
 
     def open(self, speed: float = 0.3) -> None:
         msg = self._MoveActionGoal()
@@ -77,5 +96,8 @@ class FrankaGripper(BaseGripper):
     def is_ready(self) -> bool:
         return self._ros.get_input_channel_status(self._state_channel)
 
+    # ── ROS callback ─────────────────────────────────────────────────
+
     def _on_state_msg(self, msg) -> None:
         self._position_value = np.sum(msg.position)
+        self._is_ready_flag = True
