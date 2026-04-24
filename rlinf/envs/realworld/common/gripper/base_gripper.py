@@ -12,8 +12,43 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Compatibility shim for the moved BaseGripper class."""
+from abc import ABC, abstractmethod
 
-from rlinf.envs.realworld.common.end_effectors.base_gripper import BaseGripper
 
-__all__ = ["BaseGripper"]
+class BaseGripper(ABC):
+    """Abstract base class for robot gripper control."""
+
+    @abstractmethod
+    def open(self, speed: float = 0.3) -> None:
+        """Fully open the gripper."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def close(self, speed: float = 0.3, force: float = 130.0) -> None:
+        """Fully close the gripper (or grasp)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def move(self, position: float, speed: float = 0.3) -> None:
+        """Move gripper to an absolute position."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def position(self) -> float:
+        """Current gripper opening width / position."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def is_open(self) -> bool:
+        """Whether the gripper is currently in the open state."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def is_ready(self) -> bool:
+        """Whether the gripper is ready to accept commands."""
+        raise NotImplementedError
+
+    def cleanup(self) -> None:
+        """Release hardware resources (serial port, ROS channels, etc.)."""

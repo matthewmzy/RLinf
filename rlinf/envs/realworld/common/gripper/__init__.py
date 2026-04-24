@@ -12,8 +12,46 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Compatibility shim for the moved common end-effector backends."""
+"""Shared gripper backends for real-world Franka environments."""
 
-from rlinf.envs.realworld.common.end_effectors import BaseGripper, create_gripper
+from typing import Optional
 
-__all__ = ["BaseGripper", "create_gripper"]
+from .base_gripper import BaseGripper
+
+__all__ = [
+    "BaseGripper",
+    "create_gripper",
+]
+
+
+def create_gripper(
+    gripper_type: str = "franka",
+    ros=None,
+    port: Optional[str] = None,
+    **kwargs,
+) -> BaseGripper:
+    """Factory that instantiates the right gripper backend."""
+    gt = gripper_type.lower()
+    if gt == "robotiq":
+        if port is None:
+            raise ValueError(
+                "gripper_connection (serial port) must be specified "
+                "for Robotiq grippers."
+            )
+        from .robotiq_gripper import RobotiqGripper
+
+        return RobotiqGripper(port=port, **kwargs)
+
+    if gt == "franka":
+        if ros is None:
+            raise ValueError(
+                "ROSController instance must be provided for Franka gripper."
+            )
+        from .franka_gripper import FrankaGripper
+
+        return FrankaGripper(ros=ros, **kwargs)
+
+    raise ValueError(
+        f"Unsupported gripper_type={gripper_type!r}. "
+        "Supported types: 'franka', 'robotiq'."
+    )

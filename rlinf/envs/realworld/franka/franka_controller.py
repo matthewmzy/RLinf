@@ -24,9 +24,9 @@ from rlinf.envs.realworld.common.end_effectors import (
     EndEffector,
     EndEffectorType,
     create_end_effector,
-    create_gripper,
     normalize_end_effector_type,
 )
+from rlinf.envs.realworld.common.gripper import create_gripper
 from rlinf.scheduler import Cluster, NodePlacementStrategy, Worker
 from rlinf.utils.logging import get_logger
 
@@ -127,6 +127,7 @@ class FrankaController(Worker):
         # Franka state
         self._state = FrankaRobotState()
         self._end_effector: EndEffector | None = None
+        # Gripper logic stays under the dedicated common.gripper package.
         self._gripper = None
 
         # ROS controller (arm channels only)
