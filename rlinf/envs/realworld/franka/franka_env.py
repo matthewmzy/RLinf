@@ -25,6 +25,10 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 from rlinf.envs.realworld.common.camera import BaseCamera, CameraInfo, create_camera
+from rlinf.envs.realworld.common.end_effectors import (
+    EndEffectorType,
+    normalize_end_effector_type,
+)
 from rlinf.envs.realworld.common.video_player import VideoPlayer
 from rlinf.scheduler import (
     FrankaHWInfo,
@@ -32,7 +36,6 @@ from rlinf.scheduler import (
 )
 from rlinf.utils.logging import get_logger
 
-from .end_effectors.base import EndEffectorType, normalize_end_effector_type
 from .franka_robot_state import FrankaRobotState
 from .utils import (
     clip_euler_to_target_window,
@@ -46,6 +49,7 @@ from .utils import (
 class FrankaRobotConfig:
     robot_ip: Optional[str] = None
     camera_serials: Optional[list[str]] = None
+    camera_names: Optional[dict[str, str]] = None
     camera_type: Optional[str] = None
     gripper_type: Optional[str] = None
     gripper_connection: Optional[str] = None
@@ -54,7 +58,6 @@ class FrankaRobotConfig:
     # Each value is [top%, left%, bottom%, right%] in 0..1 range.
     # Example: {"230322271990": [0.0, 0.15, 1.0, 0.85]}
     camera_crop_regions: Optional[dict[str, list[float]]] = None
-    camera_configs: Optional[dict[str, Any]] = None
 
     is_dummy: bool = False
     use_dense_reward: bool = False
@@ -109,13 +112,9 @@ class FrankaRobotConfig:
     # Extra kwargs forwarded to the end-effector constructor.
     end_effector_config: dict = field(default_factory=dict)
     # Target hand pose used for dense-reward success criteria (6-D).
-    hand_target_state: np.ndarray = field(
-        default_factory=lambda: np.zeros(6)
-    )
+    hand_target_state: np.ndarray = field(default_factory=lambda: np.zeros(6))
     # Default hand pose after ``reset()`` (6-D).
-    hand_reset_state: np.ndarray = field(
-        default_factory=lambda: np.zeros(6)
-    )
+    hand_reset_state: np.ndarray = field(default_factory=lambda: np.zeros(6))
     # Hand action scale (for continuous hand control).
     hand_action_scale: float = 1.0
     # Max per-step change for hand joints (set to inf to disable).
@@ -123,6 +122,16 @@ class FrankaRobotConfig:
 
     def __post_init__(self):
         """Convert list fields from YAML/Hydra to numpy arrays."""
+        if self.camera_names is not None:
+            self.camera_names = {
+                str(serial): str(camera_name)
+                for serial, camera_name in self.camera_names.items()
+            }
+        if self.camera_crop_regions is not None:
+            self.camera_crop_regions = {
+                str(serial): crop_region
+                for serial, crop_region in self.camera_crop_regions.items()
+            }
         self.target_ee_pose = np.array(self.target_ee_pose)
         self.reset_ee_pose = np.array(self.reset_ee_pose)
         self.reward_threshold = np.array(self.reward_threshold)
@@ -186,7 +195,9 @@ class FrankaEnv(gym.Env):
         self._camera_infos = self._build_camera_infos()
 
         # Init action and observation spaces
-        assert self._camera_infos, "At least one camera serial must be provided for FrankaEnv."
+        assert self._camera_infos, (
+            "At least one camera serial must be provided for FrankaEnv."
+        )
         self._init_action_obs_spaces()
 
         if self.config.is_dummy:
@@ -299,8 +310,20 @@ class FrankaEnv(gym.Env):
 
         For dexterous hand (12-D action)::
 
-            [x_delta, y_delta, z_delta, rx_delta, ry_delta, rz_delta,
-             h1, h2, h3, h4, h5, h6]
+            [
+                x_delta,
+                y_delta,
+                z_delta,
+                rx_delta,
+                ry_delta,
+                rz_delta,
+                h1,
+                h2,
+                h3,
+                h4,
+                h5,
+                h6,
+            ]
         """
         start_time = time.time()
 
@@ -312,7 +335,7 @@ class FrankaEnv(gym.Env):
             self.next_position[:3] + xyz_delta * self.config.action_scale[0]
         )
 
-        is_ee_action_effective = True
+        is_end_effector_action_effective = True
         if not self.config.is_dummy:
             self.next_position[3:] = (
                 R.from_euler("xyz", action[3:6] * self.config.action_scale[1])
@@ -321,7 +344,7 @@ class FrankaEnv(gym.Env):
 
             # --- End-effector action ---
             ee_action = action[6:]
-            is_ee_action_effective = self._end_effector_action(ee_action)
+            is_end_effector_action_effective = self._end_effector_action(ee_action)
 
             self._move_action(self._clip_position_to_safety_box(self.next_position))
 
@@ -336,7 +359,10 @@ class FrankaEnv(gym.Env):
         observation = self._get_observation()
 
         # Calculate reward and update the internal hold counter
-        reward = self._calc_step_reward(observation, is_ee_action_effective)
+        reward = self._calc_step_reward(
+            observation,
+            is_end_effector_action_effective,
+        )
 
         # Logic to determine termination
         # The episode is done only if the robot has reached the target (reward == 1.0)
@@ -365,21 +391,28 @@ class FrankaEnv(gym.Env):
     def _calc_step_reward(
         self,
         observation: dict[str, np.ndarray | FrankaRobotState],
-        is_gripper_action_effective: bool = False,
+        is_end_effector_action_effective: bool = False,
     ) -> float:
         """Compute the reward for the current observation, namely the robot state and camera frames.
 
         Args:
             observation (Dict[str, np.ndarray]): The current observation from the environment.
-            is_gripper_action_effective (bool): Whether the gripper action was effective (i.e., the gripper state changed).
+            is_end_effector_action_effective (bool): Whether the end-effector
+                action changed the current state.
         """
+        should_apply_gripper_penalty = (
+            self.config.enable_gripper_penalty
+            and not self._is_hand
+            and is_end_effector_action_effective
+        )
+
         if self.config.use_reward_model:
             reward = self._compute_reward_model(observation)
             if reward >= 1.0:
                 self._success_hold_counter += 1
             else:
                 self._success_hold_counter = 0
-            if self.config.enable_gripper_penalty and is_gripper_action_effective:
+            if should_apply_gripper_penalty:
                 reward -= self.config.gripper_penalty
             return reward
 
@@ -413,7 +446,7 @@ class FrankaEnv(gym.Env):
                     f"Current reward={reward}",
                 )
 
-            if self.config.enable_gripper_penalty and not self._is_hand and is_gripper_action_effective:
+            if should_apply_gripper_penalty:
                 reward -= self.config.gripper_penalty
 
             return reward
@@ -505,9 +538,7 @@ class FrankaEnv(gym.Env):
 
         # Reset end-effector
         if self._is_hand:
-            self._controller.reset_end_effector(
-                self.config.hand_reset_state
-            ).wait()
+            self._controller.reset_end_effector(self.config.hand_reset_state).wait()
             self._last_hand_command = (
                 np.array(self.config.hand_reset_state, dtype=np.float64)
                 * self.config.hand_action_scale
@@ -596,6 +627,49 @@ class FrankaEnv(gym.Env):
             return (0, int(serial))
         return (1, serial)
 
+    @staticmethod
+    def _normalize_crop_region(
+        crop_region: Any,
+        *,
+        camera_name: str,
+        serial: str,
+    ) -> tuple[float, float, float, float]:
+        """Validate and normalize a crop region from the config."""
+        if not isinstance(crop_region, (list, tuple)) or len(crop_region) != 4:
+            raise ValueError(
+                "Invalid crop_region for camera "
+                f"'{camera_name}' ({serial}): expected "
+                "[top, left, bottom, right]."
+            )
+
+        try:
+            top_pct, left_pct, bottom_pct, right_pct = tuple(
+                float(value) for value in crop_region
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Invalid crop_region for camera "
+                f"'{camera_name}' ({serial}): expected numeric values, "
+                f"got {crop_region!r}."
+            ) from exc
+
+        normalized_crop_region = (top_pct, left_pct, bottom_pct, right_pct)
+        if not all(0.0 <= value <= 1.0 for value in normalized_crop_region):
+            raise ValueError(
+                "Invalid crop_region for camera "
+                f"'{camera_name}' ({serial}): values must be within "
+                f"[0, 1], got {crop_region!r}."
+            )
+        if bottom_pct <= top_pct or right_pct <= left_pct:
+            raise ValueError(
+                "Invalid crop_region for camera "
+                f"'{camera_name}' ({serial}): expected "
+                "bottom > top and right > left, "
+                f"got {crop_region!r}."
+            )
+
+        return normalized_crop_region
+
     def _build_camera_infos(self) -> list[CameraInfo]:
         if self.config.camera_serials is None:
             return []
@@ -605,38 +679,28 @@ class FrankaEnv(gym.Env):
             key=self._serial_sort_key,
         )
 
-        camera_cfg = self.config.camera_configs or {}
-        defaults = dict(camera_cfg.get("camera_defaults", {}))
-        overrides = dict(camera_cfg.get("overrides", {}))
         default_camera_type = self.config.camera_type or "realsense"
-
-        legacy_crop_regions = self.config.camera_crop_regions or {}
+        camera_names = self.config.camera_names or {}
+        camera_crop_regions = self.config.camera_crop_regions or {}
         camera_infos: list[CameraInfo] = []
-        unnamed_index = 1
-        for serial in sorted_serials:
-            merged = dict(defaults)
-            serial_override = overrides.get(serial)
-            if serial_override:
-                merged.update(serial_override)
+        for camera_index, serial in enumerate(sorted_serials, start=1):
+            default_name = f"wrist_{camera_index}"
+            name = camera_names.get(serial, default_name)
 
-            name = merged.get("name")
-            if not name:
-                name = f"wrist_{unnamed_index}"
-                unnamed_index += 1
-
-            crop_region = merged.get("crop_region")
-            if crop_region is None and serial in legacy_crop_regions:
-                crop_region = legacy_crop_regions[serial]
+            crop_region = camera_crop_regions.get(serial)
+            if crop_region is not None:
+                crop_region = self._normalize_crop_region(
+                    crop_region,
+                    camera_name=name,
+                    serial=serial,
+                )
 
             camera_infos.append(
                 CameraInfo(
                     name=name,
                     serial_number=serial,
-                    camera_type=str(merged.get("camera_type", default_camera_type)),
-                    resolution=tuple(merged.get("resolution", (640, 480))),
-                    fps=int(merged.get("fps", 15)),
-                    enable_depth=bool(merged.get("enable_depth", False)),
-                    crop_region=tuple(crop_region) if crop_region is not None else None,
+                    camera_type=default_camera_type,
+                    crop_region=crop_region,
                 )
             )
 
@@ -711,14 +775,15 @@ class FrankaEnv(gym.Env):
                     camera._camera_info.name
                 ].shape[:2][::-1]
                 cropped_frame, resized_frame = self._crop_frame(
-                    frame, reshape_size,
+                    frame,
+                    reshape_size,
                     crop_region=camera._camera_info.crop_region,
                 )
                 frames[camera._camera_info.name] = resized_frame[
                     ..., ::-1
-                ]  # Convert RGB to BGR
+                ]  # Convert BGR to RGB
                 display_frames[camera._camera_info.name] = (
-                    resized_frame  # Original RGB for display
+                    resized_frame  # Original BGR frame for display
                 )
                 display_frames[f"{camera._camera_info.name}_full"] = (
                     cropped_frame  # Non-resized version
@@ -789,14 +854,15 @@ class FrankaEnv(gym.Env):
             return False
         else:
             # Continuous hand control
-            scaled = np.asarray(ee_action, dtype=np.float64) * self.config.hand_action_scale
+            scaled = (
+                np.asarray(ee_action, dtype=np.float64) * self.config.hand_action_scale
+            )
             if self._last_hand_command is not None:
                 delta = scaled - self._last_hand_command
                 max_d = self.config.hand_max_delta_per_step
                 scaled = self._last_hand_command + np.clip(delta, -max_d, max_d)
             self._last_hand_command = scaled.copy()
-            self._controller.command_end_effector(scaled).wait()
-            return True
+            return bool(self._controller.command_end_effector(scaled).wait()[0])
 
     def _interpolate_move(self, pose: np.ndarray, timeout: float = 1.5):
         num_steps = int(timeout * self.config.step_frequency)

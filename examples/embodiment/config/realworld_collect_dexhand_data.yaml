@@ -1,6 +1,5 @@
 defaults:
   - env/realworld_dex_pnp@env.eval
-  - cameras/realsense@cameras.realsense
   - override hydra/job_logging: stdout
 
 hydra:
@@ -47,7 +46,12 @@ env:
       left_port: /path/to/glove_port # (e.g. /dev/ttyACM0)
       frequency: 30
     override_cfg:
-      camera_configs: ${cameras.realsense}
+      # Optional per-camera overrides keyed by RealSense serial number.
+      # camera_names:
+      #   "SERIAL1": global
+      #   "SERIAL2": wrist_1
+      # camera_crop_regions:
+      #   "SERIAL1": [0.4, 0.3, 0.85, 0.7]
       target_ee_pose: TARGET_EE_POSE # Replace with your target end-effector pose
       end_effector_type: "ruiyan_hand"
       end_effector_config:

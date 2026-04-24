@@ -20,9 +20,6 @@ from typing import Any, Mapping, Optional
 
 import gymnasium as gym
 
-from rlinf.envs.realworld.common.wrappers.dexhand_intervention import (
-    DexHandIntervention,
-)
 from rlinf.envs.realworld.common.wrappers.dual_euler_obs import (
     DualQuat2EulerWrapper,
 )
@@ -48,6 +45,23 @@ from rlinf.envs.realworld.common.wrappers.reward_done_wrapper import (
 from rlinf.envs.realworld.common.wrappers.spacemouse_intervention import (
     SpacemouseIntervention,
 )
+
+
+def _load_dexhand_intervention():
+    """Import DexHandIntervention only when dex-hand teleop is requested."""
+    try:
+        from rlinf.envs.realworld.common.wrappers.dexhand_intervention import (
+            DexHandIntervention,
+        )
+    except ModuleNotFoundError as exc:
+        if exc.name and exc.name.split(".")[0] == "rlinf_dexhand":
+            raise ModuleNotFoundError(
+                "DexHandIntervention requires optional dependency "
+                "'rlinf_dexhand'. Install it before enabling "
+                "dexterous-hand teleoperation."
+            ) from exc
+        raise
+    return DexHandIntervention
 
 
 def _validate_teleop_mode(use_spacemouse: bool, use_gello: bool) -> None:
@@ -88,6 +102,7 @@ def apply_single_arm_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gym.Env:
     if not env.config.is_dummy and use_spacemouse:
         if is_dex_hand:
             glove_cfg = cfg.get("glove_config", {})
+            DexHandIntervention = _load_dexhand_intervention()
             env = DexHandIntervention(
                 env,
                 left_port=glove_cfg.get("left_port", "/dev/ttyACM0"),

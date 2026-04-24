@@ -13,7 +13,8 @@
 # limitations under the License.
 
 
-from .end_effectors.base import EndEffectorType
+from rlinf.envs.realworld.common.end_effectors import EndEffectorType
+
 from .franka_env import FrankaEnv, FrankaRobotConfig, FrankaRobotState
 
 __all__ = [

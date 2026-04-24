@@ -12,7 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .base import EndEffector, EndEffectorType, normalize_end_effector_type
+"""Compatibility shim for the moved Franka end-effector package."""
+
+from rlinf.envs.realworld.common.end_effectors import (
+    EndEffector,
+    EndEffectorType,
+    create_end_effector,
+    normalize_end_effector_type,
+)
 
 __all__ = [
     "EndEffector",
@@ -20,35 +27,3 @@ __all__ = [
     "create_end_effector",
     "normalize_end_effector_type",
 ]
-
-
-def create_end_effector(
-    end_effector_type: str | EndEffectorType,
-    **kwargs,
-) -> EndEffector:
-    """Factory function to create an end-effector instance.
-
-    Args:
-        end_effector_type: The type of end-effector to create.
-            One of ``"ruiyan_hand"``.
-        **kwargs: Additional keyword arguments forwarded to the end-effector
-            constructor.
-
-    Returns:
-        An ``EndEffector`` instance of the requested type.
-
-    Raises:
-        ValueError: If the end-effector type is not recognized.
-    """
-    if isinstance(end_effector_type, str):
-        end_effector_type = EndEffectorType(end_effector_type)
-
-    if end_effector_type == EndEffectorType.RUIYAN_HAND:
-        from .ruiyan_hand import RuiyanHand
-
-        return RuiyanHand(**kwargs)  # noqa: F811
-
-    raise ValueError(
-        f"Unsupported end-effector type: {end_effector_type}. "
-        "Supported types: ['ruiyan_hand']"
-    )

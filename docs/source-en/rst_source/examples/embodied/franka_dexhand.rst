@@ -37,7 +37,7 @@ The reward-model path is the same as the Franka real-world reward-model workflow
 For the dexterous-hand pick-and-place environment:
 
 - the default reward image follows ``env.main_image_key``
-- ``main_image_key`` is ``global`` in ``examples/embodiment/config/env/realworld_dex_pnp.yaml``
+- ``main_image_key`` defaults to ``wrist_1`` in ``examples/embodiment/config/env/realworld_dex_pnp.yaml``
 - ``examples/embodiment/config/realworld_dexpnp_rlpd_cnn_async.yaml`` uses the reward model through the ``reward`` section
 
 Configurations
@@ -58,6 +58,21 @@ Before running, fill in:
 - policy ``model_path``
 - reward ``model.model_path``
 - dexterous-hand serial ports in ``end_effector_config`` and ``glove_config``
+
+Camera naming and crop are configured directly in ``override_cfg`` when needed.
+This PR does not ship any serial-specific defaults so that other projects are
+not affected. For example:
+
+.. code-block:: yaml
+
+   camera_names:
+     "SERIAL1": global
+     "SERIAL2": wrist_1
+   camera_crop_regions:
+     "SERIAL1": [0.4, 0.3, 0.85, 0.7]
+
+If you rename a camera to ``global``, update ``main_image_key`` to ``global``
+in the task YAML as well.
 
 Workflow
 --------

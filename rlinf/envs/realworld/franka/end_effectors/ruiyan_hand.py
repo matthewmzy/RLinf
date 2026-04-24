@@ -1,4 +1,4 @@
-# Copyright 2025 The RLinf Authors.
+# Copyright 2026 The RLinf Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,88 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Ruiyan dexterous five-finger hand end-effector."""
+"""Compatibility shim for the moved RuiyanHand implementation."""
 
-from typing import Optional
+from rlinf.envs.realworld.common.end_effectors.ruiyan_hand import RuiyanHand
 
-import numpy as np
-
-from rlinf.utils.logging import get_logger
-
-from .base import EndEffector
-
-
-class RuiyanHand(EndEffector):
-    """Thin wrapper around ``rlinf_dexhand``."""
-
-    _NUM_DOFS = 6
-    _FINGER_NAMES = [
-        "thumb_rotation",
-        "thumb_bend",
-        "index",
-        "middle",
-        "ring",
-        "pinky",
-    ]
-
-    def __init__(
-        self,
-        port: str = "/dev/ttyUSB0",
-        baudrate: int = 460800,
-        motor_ids: tuple[int, ...] = (1, 2, 3, 4, 5, 6),
-        default_velocity: int = 2000,
-        default_current: int = 800,
-        default_state: Optional[list[float]] = None,
-    ):
-        from rlinf_dexhand.ruiyan import RuiyanHandDriver
-
-        self._driver = RuiyanHandDriver(
-            port=port,
-            baudrate=baudrate,
-            motor_ids=motor_ids,
-            default_velocity=default_velocity,
-            default_current=default_current,
-            default_state=default_state,
-        )
-        self._logger = get_logger()
-
-    @property
-    def action_dim(self) -> int:
-        return self._NUM_DOFS
-
-    @property
-    def state_dim(self) -> int:
-        return self._NUM_DOFS
-
-    @property
-    def control_mode(self) -> str:
-        return "continuous"
-
-    @property
-    def finger_names(self) -> list[str]:
-        """Human-readable DOF names for the Ruiyan hand."""
-        return list(self._FINGER_NAMES)
-
-    def get_detailed_state(self) -> dict:
-        """Return detailed per-motor diagnostic information."""
-        return self._driver.get_detailed_state()
-
-    def initialize(self) -> None:
-        """Open the serial port and start the background control loop."""
-        self._driver.initialize()
-
-    def shutdown(self) -> None:
-        """Stop the background loop and close the serial port."""
-        self._driver.shutdown()
-
-    def get_state(self) -> np.ndarray:
-        """Return the latest finger positions (normalised ``[0, 1]``)."""
-        return self._driver.get_state()
-
-    def command(self, action: np.ndarray) -> bool:
-        """Set target finger positions (normalised ``[0, 1]``)."""
-        return self._driver.command(action)
-
-    def reset(self, target_state: np.ndarray | None = None) -> None:
-        """Reset hand to the default or specified state."""
-        self._driver.reset(target_state)
+__all__ = ["RuiyanHand"]

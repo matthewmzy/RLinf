@@ -20,15 +20,16 @@ import numpy as np
 import psutil
 from scipy.spatial.transform import Rotation as R
 
-from rlinf.scheduler import Cluster, NodePlacementStrategy, Worker
-from rlinf.utils.logging import get_logger
-
-from .end_effectors import (
+from rlinf.envs.realworld.common.end_effectors import (
     EndEffector,
     EndEffectorType,
     create_end_effector,
+    create_gripper,
     normalize_end_effector_type,
 )
+from rlinf.scheduler import Cluster, NodePlacementStrategy, Worker
+from rlinf.utils.logging import get_logger
+
 from .franka_robot_state import FrankaRobotState
 
 
@@ -153,8 +154,6 @@ class FrankaController(Worker):
         gripper_connection: Optional[str],
     ) -> None:
         if self._end_effector_type.is_gripper:
-            from rlinf.envs.realworld.common.gripper import create_gripper
-
             self._gripper = create_gripper(
                 gripper_type=self._end_effector_type.gripper_backend,
                 ros=self._ros,
