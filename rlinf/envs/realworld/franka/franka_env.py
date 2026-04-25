@@ -311,8 +311,20 @@ class FrankaEnv(gym.Env):
 
         For dexterous hand (12-D action)::
 
-            [x_delta, y_delta, z_delta, rx_delta, ry_delta, rz_delta,
-             h1, h2, h3, h4, h5, h6]
+            [
+                x_delta,
+                y_delta,
+                z_delta,
+                rx_delta,
+                ry_delta,
+                rz_delta,
+                h1,
+                h2,
+                h3,
+                h4,
+                h5,
+                h6,
+            ]
         """
         start_time = time.time()
 
@@ -425,7 +437,11 @@ class FrankaEnv(gym.Env):
                     f"Current reward={reward}",
                 )
 
-            if self.config.enable_gripper_penalty and not self._is_hand and is_gripper_action_effective:
+            if (
+                self.config.enable_gripper_penalty
+                and not self._is_hand
+                and is_gripper_action_effective
+            ):
                 reward -= self.config.gripper_penalty
 
             return reward
@@ -517,12 +533,11 @@ class FrankaEnv(gym.Env):
 
         # Reset end-effector
         if self._is_hand:
-            self._controller.reset_end_effector(
-                self.config.hand_reset_state
-            ).wait()
-            self._last_hand_command = (
-                np.array(self.config.hand_reset_state, dtype=np.float64)
-                * self.config.hand_action_scale
+            self._controller.reset_end_effector(self.config.hand_reset_state).wait()
+            self._last_hand_command = np.clip(
+                np.array(self.config.hand_reset_state, dtype=np.float64),
+                0.0,
+                1.0,
             )
         else:
             self._controller.reset_end_effector().wait()
@@ -756,7 +771,8 @@ class FrankaEnv(gym.Env):
                     camera._camera_info.name
                 ].shape[:2][::-1]
                 cropped_frame, resized_frame = self._crop_frame(
-                    frame, reshape_size,
+                    frame,
+                    reshape_size,
                     crop_region=camera._camera_info.crop_region,
                 )
                 frames[camera._camera_info.name] = resized_frame[
@@ -801,6 +817,22 @@ class FrankaEnv(gym.Env):
     def _clear_error(self):
         self._controller.clear_errors().wait()
 
+    def _hand_action_to_state(self, hand_action: np.ndarray) -> np.ndarray:
+        hand_action = np.asarray(hand_action, dtype=np.float64)
+        scaled_action = hand_action * self.config.hand_action_scale
+        return np.clip((scaled_action + 1.0) / 2.0, 0.0, 1.0)
+
+    def _hand_state_to_action(self, hand_state: np.ndarray) -> np.ndarray:
+        if self.config.hand_action_scale <= 0:
+            raise ValueError("hand_action_scale must be positive.")
+
+        hand_state = np.clip(np.asarray(hand_state, dtype=np.float64), 0.0, 1.0)
+        return np.clip(
+            (2.0 * hand_state - 1.0) / self.config.hand_action_scale,
+            -1.0,
+            1.0,
+        )
+
     def _end_effector_action(self, ee_action: np.ndarray) -> bool:
         """Dispatch an action to the active end-effector.
 
@@ -833,15 +865,13 @@ class FrankaEnv(gym.Env):
                 return True
             return False
         else:
-            # Continuous hand control
-            scaled = np.asarray(ee_action, dtype=np.float64) * self.config.hand_action_scale
+            hand_state = self._hand_action_to_state(ee_action)
             if self._last_hand_command is not None:
-                delta = scaled - self._last_hand_command
+                delta = hand_state - self._last_hand_command
                 max_d = self.config.hand_max_delta_per_step
-                scaled = self._last_hand_command + np.clip(delta, -max_d, max_d)
-            self._last_hand_command = scaled.copy()
-            self._controller.command_end_effector(scaled).wait()
-            return True
+                hand_state = self._last_hand_command + np.clip(delta, -max_d, max_d)
+            self._last_hand_command = hand_state.copy()
+            return bool(self._controller.command_end_effector(hand_state).wait()[0])
 
     def _interpolate_move(self, pose: np.ndarray, timeout: float = 1.5):
         num_steps = int(timeout * self.config.step_frequency)
