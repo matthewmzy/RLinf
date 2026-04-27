@@ -15,6 +15,7 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 USE_MIRRORS=0
 GITHUB_PREFIX=""
 NO_ROOT=0
+DEXHAND=0
 NO_INSTALL_RLINF_CMD="--no-install-project"
 SUPPORTED_TARGETS=("embodied" "agentic" "docs")
 SUPPORTED_MODELS=("openvla" "openvla-oft" "openpi" "gr00t" "dexbotic" "starvla" "lingbotvla" "dreamzero")
@@ -34,6 +35,8 @@ Targets:
 Options (for target=embodied):
     --model <name>         Embodied model to install: ${SUPPORTED_MODELS[*]}.
     --env <name>           Single environment to install: ${SUPPORTED_ENVS[*]}.
+    --dexhand              Install optional Franka dexterous-hand dependency
+                           (RLinf-dexterous-hands). Only valid with --env franka.
 
 Common options:
     -h, --help             Show this help message and exit.
@@ -86,6 +89,10 @@ parse_args() {
                 ;;
             --no-root)
                 NO_ROOT=1
+                shift
+                ;;
+            --dexhand)
+                DEXHAND=1
                 shift
                 ;;
             --install-rlinf)
@@ -677,6 +684,9 @@ install_env_only() {
                 fi
                 install_franka_env
             fi
+            if [ "$DEXHAND" -eq 1 ]; then
+                install_franka_dexhand_deps
+            fi
             ;;
         xsquare_turtle2)
             uv sync --extra xsquare_turtle2 --active $NO_INSTALL_RLINF_CMD
@@ -913,6 +923,10 @@ install_franka_env() {
     echo "source $ROS_CATKIN_PATH/devel/setup.bash" >> "$VENV_DIR/bin/activate"
 }
 
+install_franka_dexhand_deps() {
+    uv pip install RLinf-dexterous-hands
+}
+
 install_xsquare_turtle2_env() {
     uv pip install git+${GITHUB_PREFIX}https://github.com/RLinf/xsquare_turtle_basics.git
 }
@@ -1136,6 +1150,11 @@ main() {
                 fi
             elif [ "$MODEL" != "dreamzero" ]; then
                 echo "--env must be specified when target=embodied." >&2
+                exit 1
+            fi
+
+            if [ "$DEXHAND" -eq 1 ] && [ "$ENV_NAME" != "franka" ]; then
+                echo "--dexhand is only supported with --env franka." >&2
                 exit 1
             fi
 

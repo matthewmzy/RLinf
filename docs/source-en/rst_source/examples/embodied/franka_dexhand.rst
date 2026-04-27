@@ -77,7 +77,13 @@ in the task YAML as well.
 Workflow
 --------
 
-1. Follow :doc:`franka` to finish environment setup, dependency installation, and Ray cluster setup.
+1. Follow :doc:`franka` to finish environment setup and Ray cluster setup, then install the Franka environment with dexterous-hand support:
+
+   .. code-block:: bash
+
+      bash requirements/install.sh embodied --env franka --dexhand
+
+   If you also use glove teleoperation, install the glove extra from the dexhand package separately.
 2. Collect expert demos with:
 
    .. code-block:: bash

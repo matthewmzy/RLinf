@@ -75,7 +75,13 @@ RL 训练使用 ``examples/embodiment/config/realworld_dexpnp_rlpd_cnn_async.yam
 工作流
 ------
 
-1. 按照 :doc:`franka` 完成环境部署、依赖安装和 Ray 集群配置。
+1. 按照 :doc:`franka` 完成环境部署和 Ray 集群配置，然后用下面的命令安装带灵巧手支持的 Franka 环境：
+
+   .. code-block:: bash
+
+      bash requirements/install.sh embodied --env franka --dexhand
+
+   如果你还需要手套遥操作，请再额外安装 dexhand 包的 glove 依赖。
 2. 使用下面的入口采集专家 demo：
 
    .. code-block:: bash
