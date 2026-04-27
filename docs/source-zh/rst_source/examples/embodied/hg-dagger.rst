@@ -295,6 +295,97 @@ SFT 导出的 checkpoint 会作为在线阶段的学生模型初始化。更多 
 
    bash examples/embodiment/run_realworld_async.sh realworld_pnp_dagger_openpi
 
+5. A2D + psi-policy：先做链路验收
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+如果你现在的目标不是直接做最终 SAC 微调，而是先确认：
+
+- A2D 真机观测能进入 RLinf rollout
+- teleop 接管动作能被保存成 intervention 样本
+- ``psi-policy`` actor 能基于这些样本真的发生更新
+
+那更推荐先跑仓库里新增的 A2D ``psi-policy`` HG-DAgger 预设：
+
+.. code-block:: bash
+
+   bash examples/embodiment/run_realworld_async.sh realworld_a2d_dagger_psi
+
+可选配置名：
+
+- ``realworld_a2d_dagger_psi``：推荐入口，等价于 ``realworld_a2d_dagger_psi_rtc``
+- ``realworld_a2d_dagger_psi_rtc``：显式 RTC 配置
+- ``realworld_a2d_dagger_psi_direct``：不做 RTC，最适合查单步链路
+- ``realworld_a2d_dagger_psi_window``：window overlap 平滑版本
+
+这组配置默认做了下面这些约束，目的是先把链路单独跑通：
+
+- ``algorithm.loss_type: embodied_dagger``
+- ``algorithm.dagger.only_save_expert: True``
+- ``runner.ckpt_path: null``，第一次启动不走 RLinf warmstart
+- ``rollout.model.noise_std_rollout: 0.0``，避免额外 rollout 噪声干扰排障
+- ``actor/rollout.model.model_path`` 指向原始 ``psi-policy`` `.ckpt`
+- ``normalizer_path`` 指向与该 `.ckpt` 配对的 ``normalizer.pkl``
+- 当前推荐 RTC 配置下，还固定使用：
+
+  - ``num_action_chunks: 4``
+  - ``action_dim: 26``
+  - ``rollout.action_execution.rtc.search_window: 4``
+  - ``rollout.action_execution.rtc.merge_weight_base: 0.8``
+  - ``actor.micro_batch_size: 8``
+  - ``actor.global_batch_size: 8``
+  - ``actor.optim.lr: 3e-5``
+  - ``algorithm.update_epoch: 1``
+  - ``algorithm.replay_buffer.min_buffer_size: 1``
+  - ``runner.weight_sync_interval: 1``
+
+其中 ``action_horizon`` 要特别注意：
+
+- ``examples/embodiment/config/model/psi_policy.yaml`` 的静态默认值是 ``16``
+- 但 ``RLinf`` 真正加载 ``psi-policy`` checkpoint 后，会用 checkpoint 自己的 ``n_action_steps`` 覆盖它
+- 你当前这套 A2D preset 指向的是 ``..._na32/...`` 这颗 checkpoint，所以 runtime 实际值应该按 ``32`` 走
+
+这里最容易填错的是路径语义：
+
+- ``actor.model.model_path`` / ``rollout.model.model_path``：原始 ``psi-policy`` checkpoint
+- ``normalizer_path``：和上面 checkpoint 成对的 normalizer
+- ``runner.ckpt_path``：RLinf 自己保存出来的 actor ``state_dict``；第一次跑 A2D HG-DAgger 时不要填原始 `.ckpt`
+
+当前 ``psi-policy`` HG-DAgger 的 replay 语义也已经改成了更接近原始 IL 的版本：
+
+- rollout / env 先记录最终真实执行动作流，标签源是 ``Trajectory.actions``
+- 其中 RTC 裁剪 / 平滑后的动作，以及 teleop 接管后的最终动作，都会写回这里
+- actor 收到 raw trajectory 后，不再直接用 action-level intervention 样本训练
+- 对 ``psi-policy``，actor 会把 raw trajectory 重组成：
+
+  - ``obs_t -> future executed action window``
+
+- 当前窗口长度固定跟 runtime checkpoint 的 ``action_horizon`` 走；你现在这颗 ``na32`` ckpt 对应的是 ``32``
+- 只有“当前 chunk 的 4 个子步都由 expert / teleop 执行”的位置会被保留为 anchor
+
+也就是说，当前学的是“某个观测之后，系统最终真实执行出去的未来动作轨迹”，而不是 rollout 某一次原始预测的 raw action chunk。
+
+如果你想按当前配置理解启动顺序，可以按下面这条链路看日志：
+
+1. ``run_realworld_async.sh`` 调 ``train_async.py``
+2. `Hydra` 组合出 ``realworld_a2d_dagger_psi_rtc + realworld_a2d_dagger_psi_base``
+3. runner 选择 ``AsyncEmbodiedRunner`` + ``AsyncEmbodiedDAGGERFSDPPolicy`` + ``AsyncMultiStepRolloutWorker`` + ``AsyncEnvWorker``
+4. actor / rollout 分别加载原始 ``psi-policy`` checkpoint 和 normalizer
+5. rollout 用 RTC 模式把预测 horizon 处理成真实执行的 ``4`` 步动作
+6. env 真正执行这 ``4`` 步动作，并记录 ``rewards`` / ``dones`` / ``transition_valids`` / intervention 信息
+7. env 在 rollout epoch 结束后把 raw trajectory 发给 actor
+8. actor 先把 raw trajectory 重组为 ``obs_t -> future 32-step executed action window``
+9. 样本进入 replay buffer；达到 ``min_buffer_size=1`` 后 learner 开始训练
+10. learner 每次用 ``global_batch_size=8``、``micro_batch_size=8``、``update_epoch=1``、``lr=3e-5`` 做一次 SFT 更新
+11. runner 每 ``weight_sync_interval=1`` 步把新 actor 权重再同步回 rollout
+
+验收时，建议人工切几次 teleop 接管，然后重点观察：
+
+- ``train/replay_buffer/num_trajectories``
+- ``train/replay_buffer/total_samples``
+- ``train/dagger/actor_loss``
+
+只要这些指标开始变化，就说明 A2D 的 intervention 数据链路和 ``psi-policy`` 的 HG-DAgger 更新入口已经接通。
+
 可视化与监控
 ------------
 

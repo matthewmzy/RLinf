@@ -1,0 +1,6 @@
+defaults:
+  - realworld_a2d_dagger_psi_rtc
+  - _self_
+
+# Recommended A2D psi-policy HG-Dagger entry.
+# Mirrors the current policy_config.yaml RTC behavior (use_rtc=true, execute_step=4).

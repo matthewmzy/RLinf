@@ -32,6 +32,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
 
+from rlinf.data.embodied_io_struct import Trajectory
 from rlinf.models.embodiment.base_policy import BasePolicy, ForwardType
 from rlinf.models.embodiment.modules.q_head import MultiQHead
 
@@ -942,6 +943,412 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         )
         return processed
 
+    def _prepare_shape_meta_obs_from_batch(
+        self, batch: dict[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        obs_horizon = self._get_runtime_obs_horizon()
+        obs_meta = self.shape_meta.get("obs", {})
+        processed: dict[str, torch.Tensor] = {}
+
+        states = None
+        if "states" in batch:
+            states = self._to_btd(
+                torch.as_tensor(batch["states"]),
+                target_horizon=obs_horizon,
+            )
+            if states.shape[-1] < self.cfg.action_dim:
+                raise ValueError(
+                    "psi-policy DAgger batch expects env states with at least "
+                    f"{self.cfg.action_dim} dims, got {states.shape[-1]}."
+                )
+
+        for key, meta in obs_meta.items():
+            if key not in batch:
+                continue
+            value = torch.as_tensor(batch[key])
+            if meta.get("type") == "rgb":
+                processed[key] = self._to_btchw(
+                    value,
+                    target_horizon=obs_horizon,
+                    target_size=self._get_image_target_size(key),
+                )
+            elif meta.get("type") == "low_dim":
+                processed[key] = self._to_btd(
+                    value,
+                    target_horizon=obs_horizon,
+                )
+
+        if states is not None:
+            derived_obs = self._build_low_dim_obs(
+                batch,
+                states=states,
+                target_horizon=obs_horizon,
+            )
+            for key, value in derived_obs.items():
+                processed.setdefault(key, value)
+
+        missing_keys = [key for key in obs_meta.keys() if key not in processed]
+        if missing_keys:
+            available_keys = sorted(batch.keys())
+            raise KeyError(
+                "psi-policy DAgger batch is missing required obs keys "
+                f"{missing_keys}. Available keys: {available_keys}"
+            )
+        return processed
+
+    def _prepare_dagger_obs(
+        self, batch: dict[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        raw_env_obs = {
+            key: batch[key]
+            for key in ("main_images", "extra_view_images", "states", "reset_states")
+            if key in batch
+        }
+        if "main_images" in raw_env_obs:
+            return self.preprocess_env_obs(raw_env_obs)
+        return self._prepare_shape_meta_obs_from_batch(batch)
+
+    def _reshape_action_chunk_tensor(
+        self,
+        action_tensor: torch.Tensor,
+        *,
+        field_name: str,
+    ) -> torch.Tensor:
+        action_tensor = torch.as_tensor(
+            action_tensor,
+            device=self.device,
+            dtype=torch.float32,
+        )
+        if action_tensor.ndim == 1:
+            action_tensor = action_tensor.unsqueeze(0)
+        if action_tensor.ndim == 2:
+            if action_tensor.shape[-1] % self.action_dim != 0:
+                raise ValueError(
+                    f"psi-policy {field_name} last dim {action_tensor.shape[-1]} is "
+                    f"not divisible by action_dim={self.action_dim}."
+                )
+            action_tensor = action_tensor.reshape(action_tensor.shape[0], -1, self.action_dim)
+        elif action_tensor.ndim != 3:
+            raise ValueError(
+                f"psi-policy {field_name} must have shape [B, chunk*action_dim] or "
+                f"[B, chunk, action_dim], got {tuple(action_tensor.shape)}."
+            )
+
+        if action_tensor.shape[-1] != self.action_dim:
+            raise ValueError(
+                f"psi-policy {field_name} expects action dim {self.action_dim}, got "
+                f"{tuple(action_tensor.shape)}."
+            )
+        if action_tensor.shape[1] > self.action_horizon:
+            raise ValueError(
+                f"psi-policy {field_name} chunk length {action_tensor.shape[1]} "
+                f"exceeds action_horizon={self.action_horizon}."
+            )
+        return action_tensor.contiguous()
+
+    def _align_trajectory_tensor_dict(
+        self,
+        data: Optional[dict[str, torch.Tensor]],
+        *,
+        traj_len: int,
+        field_prefix: str,
+        skip_keys: Optional[set[str]] = None,
+    ) -> dict[str, torch.Tensor]:
+        if not data:
+            return {}
+
+        aligned: dict[str, torch.Tensor] = {}
+        for key, value in data.items():
+            if skip_keys is not None and key in skip_keys:
+                continue
+            if value is None:
+                continue
+            aligned_value = Trajectory._align_field_with_traj_len(
+                value,
+                traj_len,
+                f"{field_prefix}.{key}",
+            )
+            if aligned_value is not None:
+                aligned[key] = aligned_value
+        return aligned
+
+    def _build_dagger_window_obs_sources(
+        self,
+        trajectory: Trajectory,
+        *,
+        traj_len: int,
+    ) -> tuple[
+        dict[str, torch.Tensor],
+        dict[str, torch.Tensor],
+        dict[str, torch.Tensor],
+    ]:
+        forward_inputs = self._align_trajectory_tensor_dict(
+            trajectory.forward_inputs,
+            traj_len=traj_len,
+            field_prefix="forward_inputs",
+            skip_keys={"action", "model_action"},
+        )
+        curr_obs = self._align_trajectory_tensor_dict(
+            trajectory.curr_obs,
+            traj_len=traj_len,
+            field_prefix="curr_obs",
+        )
+        next_obs = self._align_trajectory_tensor_dict(
+            trajectory.next_obs,
+            traj_len=traj_len,
+            field_prefix="next_obs",
+        )
+
+        obs_sources = dict(forward_inputs)
+        for key, value in curr_obs.items():
+            obs_sources.setdefault(key, value)
+
+        if not obs_sources:
+            raise KeyError(
+                "psi-policy HG-Dagger replay requires rollout observations in either "
+                "trajectory.forward_inputs or trajectory.curr_obs."
+            )
+        return obs_sources, curr_obs, next_obs
+
+    def _build_executed_action_window(
+        self,
+        executed_actions: torch.Tensor,
+        transition_valids: torch.Tensor,
+        done_flags: torch.Tensor,
+        *,
+        anchor_step: int,
+    ) -> torch.Tensor | None:
+        collected: list[torch.Tensor] = []
+        traj_len, num_chunks = executed_actions.shape[:2]
+
+        for step_idx in range(anchor_step, traj_len):
+            for chunk_idx in range(num_chunks):
+                if not bool(transition_valids[step_idx, chunk_idx]):
+                    return None
+
+                collected.append(executed_actions[step_idx, chunk_idx])
+                if len(collected) == self.action_horizon:
+                    return torch.stack(collected, dim=0).contiguous()
+
+                if bool(done_flags[step_idx, chunk_idx]):
+                    return None
+
+        return None
+
+    @staticmethod
+    def _stack_windowized_tensor_dict(
+        selected: dict[str, list[torch.Tensor]],
+    ) -> dict[str, torch.Tensor]:
+        stacked: dict[str, torch.Tensor] = {}
+        for key, values in selected.items():
+            if not values:
+                continue
+            stacked[key] = torch.stack(values, dim=0).unsqueeze(1).cpu().contiguous()
+        return stacked
+
+    def prepare_dagger_replay_trajectories(
+        self,
+        trajectory: Trajectory,
+    ) -> list[Trajectory] | None:
+        if not isinstance(trajectory, Trajectory):
+            raise TypeError(
+                "psi-policy DAgger replay preprocessing expects a Trajectory, got "
+                f"{type(trajectory)}."
+            )
+        if trajectory.actions is None or trajectory.intervene_flags is None:
+            return None
+
+        traj_len = int(trajectory.actions.shape[0])
+        aligned_actions = Trajectory._align_field_with_traj_len(
+            trajectory.actions,
+            traj_len,
+            "actions",
+        )
+        assert aligned_actions is not None
+        if aligned_actions.dim() != 3:
+            raise ValueError(
+                "psi-policy HG-Dagger expects trajectory.actions with shape [T, B, chunk*action_dim], "
+                f"got {tuple(aligned_actions.shape)}."
+            )
+        if aligned_actions.shape[-1] % self.action_dim != 0:
+            raise ValueError(
+                "psi-policy HG-Dagger cannot infer executed chunk size from trajectory.actions "
+                f"shape {tuple(aligned_actions.shape)} with action_dim={self.action_dim}."
+            )
+
+        num_chunks = aligned_actions.shape[-1] // self.action_dim
+        if num_chunks != self.cfg.num_action_chunks:
+            logger.warning(
+                "psi-policy HG-Dagger inferred executed chunk size %s from trajectory.actions, "
+                "while cfg.num_action_chunks=%s. Using the trajectory value.",
+                num_chunks,
+                self.cfg.num_action_chunks,
+            )
+
+        executed_actions = Trajectory._reshape_action_like_tensor(
+            aligned_actions,
+            traj_len=traj_len,
+            num_chunks=num_chunks,
+            field_name="actions",
+        )
+        expert_flags = Trajectory._reshape_action_like_tensor(
+            trajectory.intervene_flags,
+            traj_len=traj_len,
+            num_chunks=num_chunks,
+            field_name="intervene_flags",
+        )
+        if executed_actions is None or expert_flags is None:
+            return None
+
+        batch_size = int(executed_actions.shape[1])
+        transition_valids = Trajectory._reshape_chunk_scalar_tensor(
+            trajectory.transition_valids,
+            traj_len=traj_len,
+            num_chunks=num_chunks,
+            field_name="transition_valids",
+        )
+        if transition_valids is None:
+            transition_valids = torch.ones(
+                (traj_len, batch_size, num_chunks),
+                dtype=torch.bool,
+                device=executed_actions.device,
+            )
+        else:
+            transition_valids = transition_valids.to(dtype=torch.bool)
+
+        done_tensors = []
+        for field_name in ("dones", "terminations", "truncations"):
+            reshaped = Trajectory._reshape_chunk_scalar_tensor(
+                getattr(trajectory, field_name),
+                traj_len=traj_len,
+                num_chunks=num_chunks,
+                field_name=field_name,
+            )
+            if reshaped is not None:
+                done_tensors.append(reshaped.to(dtype=torch.bool))
+        if done_tensors:
+            done_flags = done_tensors[0]
+            for done_tensor in done_tensors[1:]:
+                done_flags = done_flags | done_tensor
+        else:
+            done_flags = torch.zeros_like(transition_valids, dtype=torch.bool)
+
+        reward_chunks = Trajectory._reshape_chunk_scalar_tensor(
+            trajectory.rewards,
+            traj_len=traj_len,
+            num_chunks=num_chunks,
+            field_name="rewards",
+        )
+        reward_per_step = None
+        if reward_chunks is not None:
+            reward_per_step = reward_chunks.to(dtype=torch.float32).sum(dim=-1)
+
+        obs_sources, curr_obs, next_obs = self._build_dagger_window_obs_sources(
+            trajectory,
+            traj_len=traj_len,
+        )
+
+        anchor_mask = expert_flags.to(dtype=torch.bool).all(dim=-1).all(dim=-1)
+        replay_trajectories: list[Trajectory] = []
+
+        for batch_idx in range(batch_size):
+            action_windows: list[torch.Tensor] = []
+            selected_forward_inputs: dict[str, list[torch.Tensor]] = {
+                key: [] for key in obs_sources
+            }
+            selected_curr_obs: dict[str, list[torch.Tensor]] = {
+                key: [] for key in curr_obs
+            }
+            selected_next_obs: dict[str, list[torch.Tensor]] = {
+                key: [] for key in next_obs
+            }
+            selected_rewards: list[torch.Tensor] = []
+
+            env_actions = executed_actions[:, batch_idx]
+            env_valids = transition_valids[:, batch_idx]
+            env_dones = done_flags[:, batch_idx]
+
+            for step_idx in range(traj_len):
+                if not bool(anchor_mask[step_idx, batch_idx]):
+                    continue
+
+                action_window = self._build_executed_action_window(
+                    env_actions,
+                    env_valids,
+                    env_dones,
+                    anchor_step=step_idx,
+                )
+                if action_window is None:
+                    continue
+
+                action_windows.append(action_window.cpu())
+                for key, value in obs_sources.items():
+                    selected_forward_inputs[key].append(
+                        value[step_idx, batch_idx].cpu().contiguous()
+                    )
+                for key, value in curr_obs.items():
+                    selected_curr_obs[key].append(
+                        value[step_idx, batch_idx].cpu().contiguous()
+                    )
+                for key, value in next_obs.items():
+                    selected_next_obs[key].append(
+                        value[step_idx, batch_idx].cpu().contiguous()
+                    )
+                if reward_per_step is not None:
+                    selected_rewards.append(
+                        reward_per_step[step_idx, batch_idx]
+                        .reshape(1)
+                        .cpu()
+                        .contiguous()
+                    )
+
+            if not action_windows:
+                continue
+
+            stacked_windows = (
+                torch.stack(action_windows, dim=0).unsqueeze(1).contiguous()
+            )
+            if selected_rewards:
+                rewards = torch.stack(selected_rewards, dim=0).to(
+                    dtype=torch.float32
+                )
+            else:
+                rewards = torch.zeros(
+                    (stacked_windows.shape[0], 1), dtype=torch.float32
+                )
+
+            forward_inputs = self._stack_windowized_tensor_dict(selected_forward_inputs)
+            forward_inputs["action"] = stacked_windows
+
+            replay_trajectories.append(
+                Trajectory(
+                    max_episode_length=trajectory.max_episode_length,
+                    model_weights_id=trajectory.model_weights_id,
+                    actions=stacked_windows,
+                    intervene_flags=torch.ones_like(
+                        stacked_windows, dtype=torch.bool
+                    ),
+                    transition_valids=torch.ones(
+                        (stacked_windows.shape[0], 1), dtype=torch.bool
+                    ),
+                    rewards=rewards,
+                    terminations=torch.zeros(
+                        (stacked_windows.shape[0], 1), dtype=torch.bool
+                    ),
+                    truncations=torch.zeros(
+                        (stacked_windows.shape[0], 1), dtype=torch.bool
+                    ),
+                    dones=torch.zeros(
+                        (stacked_windows.shape[0], 1), dtype=torch.bool
+                    ),
+                    forward_inputs=forward_inputs,
+                    curr_obs=self._stack_windowized_tensor_dict(selected_curr_obs),
+                    next_obs=self._stack_windowized_tensor_dict(selected_next_obs),
+                )
+            )
+
+        return replay_trajectories or None
+
     def encode_obs(self, obs: dict[str, torch.Tensor], detach_encoder: bool = False):
         nobs = self.normalizer.normalize(obs)
         nobs = self._move_obs_dict_to_encoder_device(nobs)
@@ -956,7 +1363,46 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
             obs_feature = obs_feature.detach()
         return cond_tokens, obs_feature
 
+    def prepare_dagger_sft_batch(self, batch):
+        if not hasattr(batch, "keys"):
+            raise TypeError(
+                f"psi-policy DAgger batch must be a mapping, got {type(batch)}."
+            )
+        if "model_action" in batch:
+            target_field = "model_action"
+            target_actions = batch["model_action"]
+        elif "action" in batch:
+            target_field = "action"
+            target_actions = batch["action"]
+        else:
+            raise KeyError(
+                "psi-policy DAgger batch requires either 'model_action' or 'action'."
+            )
+
+        return {
+            "obs": self._prepare_dagger_obs(batch),
+            "action": self._reshape_action_chunk_tensor(
+                target_actions,
+                field_name=target_field,
+            ),
+        }
+
+    def sft_forward(self, data, **kwargs):
+        del kwargs
+        if data is None:
+            raise ValueError("psi-policy SFT forward requires a prepared DAgger batch.")
+        return self.policy(
+            {
+                "obs": data["obs"],
+                "action": data["action"],
+            },
+            training=self.training,
+        )
+
     def forward(self, forward_type=ForwardType.DEFAULT, **kwargs):
+        if forward_type == ForwardType.SFT:
+            return self.sft_forward(**kwargs)
+
         obs = kwargs.get("obs")
         if obs is not None:
             kwargs["raw_obs"] = obs
@@ -1122,16 +1568,11 @@ class PsiPolicyForRL(nn.Module, BasePolicy):
         noise_std = self.cfg.noise_std_rollout
         provided_action = forward_inputs.get("action")
         if provided_action is not None:
-            provided_action = provided_action.to(device=self.device, dtype=torch.float32)
-            if provided_action.ndim == 2:
-                provided_action = provided_action.reshape(provided_action.shape[0], -1, self.action_dim)
-            if provided_action.ndim != 3 or provided_action.shape[-1] != self.action_dim:
-                raise ValueError(
-                    "psi-policy forward_inputs['action'] must have shape [B, chunk*action_dim] or "
-                    f"[B, chunk, action_dim], got {tuple(provided_action.shape)}."
-                )
-            num_chunks = int(provided_action.shape[1])
-            action_chunks = provided_action[:, :num_chunks].contiguous()
+            action_chunks = self._reshape_action_chunk_tensor(
+                provided_action,
+                field_name="forward_inputs['action']",
+            )
+            num_chunks = int(action_chunks.shape[1])
             action_chunks_norm = self.normalizer["action"].normalize(action_chunks)
         else:
             num_chunks = self.cfg.num_action_chunks

@@ -19,6 +19,8 @@ import torch.nn as nn
 OmegaConf = pytest.importorskip("omegaconf").OmegaConf
 from types import SimpleNamespace
 
+from rlinf.data.embodied_io_struct import Trajectory
+from rlinf.models.embodiment.base_policy import BasePolicy, ForwardType
 from rlinf.models.embodiment.psi_policy.psi_policy_for_rl import (
     PsiPolicyForRL,
     PsiPolicyConfig,
@@ -26,6 +28,7 @@ from rlinf.models.embodiment.psi_policy.psi_policy_for_rl import (
     _build_rl_action_mask,
     _normalize_rl_action_mask_cfg,
 )
+from rlinf.workers.actor.fsdp_dagger_policy_worker import EmbodiedDAGGERFSDPPolicy
 from rlinf.workers.actor.fsdp_sac_policy_worker import EmbodiedSACFSDPPolicy
 
 
@@ -161,6 +164,110 @@ def _make_minimal_policy(cfg: PsiPolicyConfig | None = None) -> PsiPolicyForRL:
     )
     policy.normalizer = _IdentityNormalizer(action=_IdentityFieldNormalizer())
     return policy
+
+
+def _make_chunk_tensor(step_values: list[list[float]], action_dim: int) -> torch.Tensor:
+    chunks = []
+    for step in step_values:
+        step_chunks = [
+            torch.full((action_dim,), float(value), dtype=torch.float32)
+            for value in step
+        ]
+        chunks.append(torch.stack(step_chunks, dim=0).reshape(-1))
+    return torch.stack(chunks, dim=0).unsqueeze(1)
+
+
+def _make_flag_tensor(step_flags: list[list[bool]], action_dim: int) -> torch.Tensor:
+    chunks = []
+    for step in step_flags:
+        step_chunks = [
+            torch.full((action_dim,), bool(flag), dtype=torch.bool) for flag in step
+        ]
+        chunks.append(torch.stack(step_chunks, dim=0).reshape(-1))
+    return torch.stack(chunks, dim=0).unsqueeze(1)
+
+
+def _make_psi_dagger_trajectory(cfg: PsiPolicyConfig) -> Trajectory:
+    traj_len = 3
+    image_size = cfg.image_size
+
+    actions = _make_chunk_tensor([[0, 1], [10, 11], [20, 21]], cfg.action_dim)
+    intervene_flags = _make_flag_tensor(
+        [[True, True], [True, False], [True, True]],
+        cfg.action_dim,
+    )
+    transition_valids = torch.tensor(
+        [[[True, True]], [[True, True]], [[True, True]]], dtype=torch.bool
+    )
+    dones = torch.tensor([[[False, False]], [[False, False]], [[False, False]]], dtype=torch.bool)
+    rewards = torch.tensor([[[1.0, 2.0]], [[3.0, 4.0]], [[5.0, 6.0]]], dtype=torch.float32)
+
+    main_images = torch.stack(
+        [
+            torch.full((1, image_size, image_size, 3), fill_value=step_idx, dtype=torch.uint8)
+            for step_idx in range(traj_len)
+        ],
+        dim=0,
+    )
+    extra_view_images = torch.stack(
+        [
+            torch.full(
+                (1, 2, image_size, image_size, 3),
+                fill_value=step_idx + 1,
+                dtype=torch.uint8,
+            )
+            for step_idx in range(traj_len)
+        ],
+        dim=0,
+    )
+    states = torch.stack(
+        [
+            torch.full((1, 28), fill_value=float(step_idx), dtype=torch.float32)
+            for step_idx in range(traj_len)
+        ],
+        dim=0,
+    )
+    reset_states = torch.stack(
+        [
+            torch.full((1, 28), fill_value=100.0 + step_idx, dtype=torch.float32)
+            for step_idx in range(traj_len)
+        ],
+        dim=0,
+    )
+    model_action = torch.full_like(actions, fill_value=-99.0)
+
+    curr_obs = {
+        "rgb_head": main_images.clone(),
+        "rgb_left_hand": torch.zeros(traj_len, 1, image_size, image_size, 3, dtype=torch.uint8),
+        "rgb_right_hand": torch.zeros(traj_len, 1, image_size, image_size, 3, dtype=torch.uint8),
+        "right_arm_states": torch.zeros(traj_len, 1, 7, dtype=torch.float32),
+        "left_arm_states": torch.zeros(traj_len, 1, 7, dtype=torch.float32),
+        "right_hand_states": torch.zeros(traj_len, 1, 6, dtype=torch.float32),
+        "left_hand_states": torch.zeros(traj_len, 1, 6, dtype=torch.float32),
+    }
+    next_obs = {
+        key: value + 1 if value.dtype != torch.bool else value.clone()
+        for key, value in curr_obs.items()
+    }
+
+    return Trajectory(
+        max_episode_length=200,
+        model_weights_id="psi-test",
+        actions=actions,
+        intervene_flags=intervene_flags,
+        transition_valids=transition_valids,
+        rewards=rewards,
+        dones=dones,
+        forward_inputs={
+            "main_images": main_images,
+            "extra_view_images": extra_view_images,
+            "states": states,
+            "reset_states": reset_states,
+            "model_action": model_action,
+        },
+        curr_obs=curr_obs,
+        next_obs=next_obs,
+    )
 
 
 def test_preprocess_env_obs_keeps_images_in_zero_one_and_pads_history():
@@ -360,3 +467,173 @@ def test_default_forward_uses_recorded_actions_when_recomputing_logprobs():
     assert output["logprobs"].shape == (1, cfg.num_action_chunks, cfg.action_dim)
     assert output["entropy"].shape == (1, cfg.num_action_chunks, cfg.action_dim)
     assert torch.count_nonzero(output["logprobs"]) == 0
+
+
+def test_prepare_dagger_sft_batch_prefers_model_action_and_reshapes_flat_chunks():
+    cfg = PsiPolicyConfig(obs_horizon=1, action_horizon=16, num_action_chunks=2, image_size=4)
+    policy = _make_minimal_policy(cfg)
+
+    model_action = torch.arange(2 * 2 * cfg.action_dim, dtype=torch.float32).reshape(2, -1)
+    prepared = policy.prepare_dagger_sft_batch(
+        {
+            "main_images": torch.zeros(2, 4, 4, 3, dtype=torch.uint8),
+            "extra_view_images": torch.zeros(2, 2, 4, 4, 3, dtype=torch.uint8),
+            "states": torch.arange(2 * 28, dtype=torch.float32).reshape(2, 28),
+            "action": torch.full((2, cfg.action_dim), -1.0),
+            "model_action": model_action,
+        }
+    )
+
+    assert prepared["action"].shape == (2, 2, cfg.action_dim)
+    assert torch.allclose(
+        prepared["action"],
+        model_action.reshape(2, 2, cfg.action_dim),
+    )
+    assert prepared["obs"]["rgb_head"].shape == (2, 1, 3, 4, 4)
+    assert prepared["obs"]["rgb_left_hand"].shape == (2, 1, 3, 4, 4)
+    assert prepared["obs"]["rgb_right_hand"].shape == (2, 1, 3, 4, 4)
+
+
+def test_prepare_dagger_sft_batch_accepts_shape_meta_named_obs_and_3d_actions():
+    cfg = PsiPolicyConfig(obs_horizon=1, action_horizon=16, num_action_chunks=2, image_size=4)
+    policy = _make_minimal_policy(cfg)
+
+    action_chunks = torch.arange(2 * cfg.action_dim, dtype=torch.float32).reshape(
+        1, 2, cfg.action_dim
+    )
+    prepared = policy.prepare_dagger_sft_batch(
+        {
+            "rgb_head": torch.zeros(1, 4, 4, 3, dtype=torch.uint8),
+            "rgb_left_hand": torch.zeros(1, 4, 4, 3, dtype=torch.uint8),
+            "rgb_right_hand": torch.zeros(1, 4, 4, 3, dtype=torch.uint8),
+            "right_arm_states": torch.zeros(1, 7),
+            "left_arm_states": torch.zeros(1, 7),
+            "right_hand_states": torch.zeros(1, 6),
+            "left_hand_states": torch.zeros(1, 6),
+            "action": action_chunks,
+        }
+    )
+
+    assert prepared["action"].shape == (1, 2, cfg.action_dim)
+    assert torch.allclose(prepared["action"], action_chunks)
+    assert prepared["obs"]["rgb_head"].shape == (1, 1, 3, 4, 4)
+    assert prepared["obs"]["right_arm_states"].shape == (1, 1, 7)
+
+
+def test_forward_sft_dispatches_to_underlying_psi_policy_loss():
+    cfg = PsiPolicyConfig()
+    policy = _make_minimal_policy(cfg)
+
+    class _RecordingPolicy(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def forward(self, batch, training=True):
+            self.calls.append((batch, training))
+            return torch.tensor(1.25)
+
+    recording_policy = _RecordingPolicy()
+    policy.policy = recording_policy
+    policy.train()
+
+    data = {
+        "obs": {"rgb_head": torch.zeros(1, 1, 3, 4, 4)},
+        "action": torch.zeros(1, 1, cfg.action_dim),
+    }
+    output = policy.forward(forward_type=ForwardType.SFT, data=data)
+
+    assert output.item() == pytest.approx(1.25)
+    assert len(recording_policy.calls) == 1
+    recorded_batch, recorded_training = recording_policy.calls[0]
+    assert set(recorded_batch.keys()) == {"obs", "action"}
+    assert set(recorded_batch["obs"].keys()) == {"rgb_head"}
+    assert torch.equal(recorded_batch["obs"]["rgb_head"], data["obs"]["rgb_head"])
+    assert torch.equal(recorded_batch["action"], data["action"])
+    assert recorded_training is True
+
+
+def test_prepare_dagger_replay_trajectories_builds_future_windows_from_executed_actions():
+    cfg = PsiPolicyConfig(obs_horizon=1, action_horizon=4, num_action_chunks=2, image_size=4)
+    policy = _make_minimal_policy(cfg)
+    trajectory = _make_psi_dagger_trajectory(cfg)
+
+    prepared = policy.prepare_dagger_replay_trajectories(trajectory)
+
+    assert prepared is not None
+    assert len(prepared) == 1
+    replay_traj = prepared[0]
+    assert "model_action" not in replay_traj.forward_inputs
+    assert replay_traj.forward_inputs["action"].shape == (1, 1, 4, cfg.action_dim)
+    assert replay_traj.actions.shape == (1, 1, 4, cfg.action_dim)
+    assert torch.equal(
+        replay_traj.forward_inputs["action"][0, 0, :, 0],
+        torch.tensor([0.0, 1.0, 10.0, 11.0]),
+    )
+    assert torch.equal(
+        replay_traj.forward_inputs["main_images"][0, 0],
+        trajectory.forward_inputs["main_images"][0, 0],
+    )
+    assert torch.equal(
+        replay_traj.forward_inputs["states"][0, 0],
+        trajectory.forward_inputs["states"][0, 0],
+    )
+    assert replay_traj.rewards.shape == (1, 1)
+    assert replay_traj.rewards[0, 0].item() == pytest.approx(3.0)
+
+
+def test_prepare_dagger_replay_trajectories_drops_partial_and_short_tail_anchors():
+    cfg = PsiPolicyConfig(obs_horizon=1, action_horizon=4, num_action_chunks=2, image_size=4)
+    policy = _make_minimal_policy(cfg)
+    trajectory = _make_psi_dagger_trajectory(cfg)
+
+    prepared = policy.prepare_dagger_replay_trajectories(trajectory)
+
+    assert prepared is not None
+    replay_traj = prepared[0]
+    assert replay_traj.forward_inputs["action"].shape[0] == 1
+    assert torch.equal(
+        replay_traj.forward_inputs["action"][0, 0, :, 0],
+        torch.tensor([0.0, 1.0, 10.0, 11.0]),
+    )
+
+
+class _FallbackDaggerPolicy(BasePolicy):
+    def default_forward(self, **kwargs):
+        raise NotImplementedError
+
+    def predict_action_batch(self, **kwargs):
+        raise NotImplementedError
+
+
+def test_dagger_worker_uses_policy_replay_hook_and_default_fallback():
+    cfg = PsiPolicyConfig(obs_horizon=1, action_horizon=4, num_action_chunks=2, image_size=4)
+    psi_policy = _make_minimal_policy(cfg)
+    psi_trajectory = _make_psi_dagger_trajectory(cfg)
+    worker = object.__new__(EmbodiedDAGGERFSDPPolicy)
+    worker.model = psi_policy
+
+    psi_prepared = worker._prepare_replay_trajectories(psi_trajectory)
+
+    assert len(psi_prepared) == 1
+    assert psi_prepared[0].forward_inputs["action"].shape == (1, 1, 4, cfg.action_dim)
+
+    fallback_policy = _FallbackDaggerPolicy()
+    worker.model = fallback_policy
+    fallback_trajectory = Trajectory(
+        max_episode_length=8,
+        model_weights_id="fallback",
+        actions=torch.tensor([[[1.0, 2.0]]], dtype=torch.float32),
+        intervene_flags=torch.tensor([[[True, True]]], dtype=torch.bool),
+        rewards=torch.tensor([[[1.0]]], dtype=torch.float32),
+        transition_valids=torch.tensor([[[True]]], dtype=torch.bool),
+        forward_inputs={"action": torch.tensor([[[1.0, 2.0]]], dtype=torch.float32)},
+    )
+
+    fallback_prepared = worker._prepare_replay_trajectories(fallback_trajectory)
+
+    assert len(fallback_prepared) == 1
+    assert torch.equal(
+        fallback_prepared[0].forward_inputs["action"],
+        fallback_trajectory.extract_intervene_traj(mode="all")[0].forward_inputs["action"],
+    )

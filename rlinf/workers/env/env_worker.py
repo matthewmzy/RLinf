@@ -981,6 +981,7 @@ class EnvWorker(Worker):
         env_metrics = defaultdict(list)
 
         for epoch in range(self.rollout_epoch):
+            should_stop_epoch = False
             self._clear_pending_env_inputs()
             env_outputs = self.bootstrap_step()
             for stage_id in range(self.stage_num):

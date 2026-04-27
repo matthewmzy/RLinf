@@ -25,7 +25,7 @@
    - 你当前场景是单机 4090，所以推荐先用单节点 Ray
    - 同一台机器同时承担 actor、rollout、env
 5. RLinf 环境已安装
-   - 在 `RLinf` 根目录能运行 `python examples/embodiment/train_embodied_agent.py ...`
+   - 在 `RLinf` 根目录能运行 `python examples/embodiment/train_async.py ...`
 
 ## 1.1 需不需要拉 RLinf docker
 
@@ -75,21 +75,54 @@ source .venv/bin/activate
 
 这一步的目标只是拿到 `ckpt + normalizer.pkl`，不是在 RLinf 里重复做 imitation training。
 
+## 1.2 为什么建议先跑 HG-Dagger
+
+如果你现在的首要目标是确认下面这条链路真的通：
+
+1. A2D 真机观测进到了 RLinf rollout
+2. 人类接管动作被正确标成 intervention 样本
+3. actor 能基于这些样本发生参数更新
+
+那先跑 HG-Dagger 比直接上 SAC 更稳。
+
+原因是：
+
+- HG-Dagger 只验证 `env -> rollout -> replay buffer -> actor` 这条监督更新链路
+- 不会把 critic、entropy tuning、demo/replay 混采这些 SAC 变量一起带进来
+- 你手动接管几次后，就应该能很快看到 `train/dagger/actor_loss` 和 replay buffer 指标变化
+
+这次仓库里新增的入口是：
+
+- `realworld_a2d_dagger_psi`
+  - 推荐入口，等价于 `realworld_a2d_dagger_psi_rtc`
+- `realworld_a2d_dagger_psi_rtc`
+  - 显式 RTC 配置
+- `realworld_a2d_dagger_psi_direct`
+  - 不做 RTC 拼接，最适合查单步链路
+- `realworld_a2d_dagger_psi_window`
+  - 用 window overlap 平滑
+
+其中 `realworld_a2d_dagger_psi` 默认对齐你当前 `policy_config.yaml` 的行为：
+
+- `control.use_rtc: true`
+- `policy.imle.execute_step: 4`
+
 ## 2. 关键配置改哪里
 
 主配置文件：
 
-- [realworld_a2d_sac_psi.yaml](/Users/matthew/Documents/a2d/RLinf/examples/embodiment/config/realworld_a2d_sac_psi.yaml)
+- HG-Dagger 验链路：`examples/embodiment/config/realworld_a2d_dagger_psi.yaml`
+- SAC 继续优化：`examples/embodiment/config/realworld_a2d_sac_psi.yaml`
 
 模型配置：
 
-- [psi_policy.yaml](/Users/matthew/Documents/a2d/RLinf/examples/embodiment/config/model/psi_policy.yaml)
+- `examples/embodiment/config/model/psi_policy.yaml`
 
 最需要按现场改的项目只有这些：
 
 ### 2.1 单机 4090 时，Ray 集群怎么配
 
-如果训练、rollout、推理都在同一台 4090 上，最简单也最稳妥的配置就是单节点。当前仓库里的 [realworld_a2d_sac_psi.yaml](/Users/matthew/Documents/a2d/RLinf/examples/embodiment/config/realworld_a2d_sac_psi.yaml) 默认已经按这个思路改好了。
+如果训练、rollout、推理都在同一台 4090 上，最简单也最稳妥的配置就是单节点。当前仓库里的 A2D `psi-policy` 预设（包括 `realworld_a2d_dagger_psi.yaml` 和 `realworld_a2d_sac_psi.yaml`）都已经按这个思路配好了。
 
 如果你想核对，`cluster` 应该长这样：
 
@@ -148,6 +181,7 @@ cluster:
    - `actor.model.model_path`
    - `actor.model.normalizer_path`
    - rollout 会复用 `actor.model.normalizer_path`
+   - `runner.ckpt_path`
 
 3. 日志实验名
    - `runner.logger.experiment_name`
@@ -186,7 +220,29 @@ cluster:
 - 一旦出现第一批人工接管轨迹，demo buffer 会自动开始参与混采
 - 如果你打开 `actor.model.rl_action_mask`，`target_entropy` 会自动按实际参与 RL 的动作维度数调整
 
-### 2.2 动作维度 mask 怎么配
+### 2.2 三个路径别填混
+
+这里最容易出错的是把 RLinf checkpoint 和 `psi-policy` 原始 checkpoint 混掉。
+
+这三个字段的语义分别是：
+
+1. `actor.model.model_path` / `rollout.model.model_path`
+   - 填 `psi-policy` 原始训练产物里的 `.ckpt`
+   - RLinf 会直接从这里还原 `psi-policy` 网络和 `shape_meta`
+2. `normalizer_path`
+   - 填和上面 `.ckpt` 配对的 `normalizer.pkl`
+   - 不要跨实验混用
+3. `runner.ckpt_path`
+   - 这是 RLinf 自己保存出来的 actor `state_dict`
+   - 第一次跑 `realworld_a2d_dagger_psi*` 时应该保持 `null`
+   - 只有当你要从之前一次 RLinf 训练结果继续接着训，才填这个字段
+
+一句话记：
+
+- 原始 `psi-policy` 初始化，用 `model_path + normalizer_path`
+- RLinf 续训，用 `runner.ckpt_path`
+
+### 2.3 动作维度 mask 怎么配
 
 现在 `psi_policy.yaml` 里已经支持一个方便的 `rl_action_mask`：
 
@@ -308,34 +364,189 @@ ray status
 
 ## 4. 运行命令
 
-### 4.1 启动训练
+### 4.0 先用 HG-Dagger 验链路
+
+如果你现在是第一次把 `psi-policy` 接进 RLinf，建议先跑：
+
+```bash
+bash examples/embodiment/run_realworld_async.sh realworld_a2d_dagger_psi
+```
+
+如果你想切执行模式，对应配置名是：
+
+- `realworld_a2d_dagger_psi`
+  - 推荐，等价于 `realworld_a2d_dagger_psi_rtc`
+- `realworld_a2d_dagger_psi_rtc`
+  - 显式 RTC 配置
+- `realworld_a2d_dagger_psi_direct`
+  - 最容易查 rollout 原始动作
+- `realworld_a2d_dagger_psi_window`
+  - 更平滑，但排障时不如 direct 直观
+
+这组配置默认已经做了几件适合“先验链路”的事情：
+
+- `algorithm.loss_type: embodied_dagger`
+- `algorithm.dagger.only_save_expert: True`
+- `runner.ckpt_path: null`
+- `rollout.model.noise_std_rollout: 0.0`
+- `micro/global batch size = 8`
+
+第一次联调时，建议你先人工接管几次，再看下面这些指标有没有开始变化：
+
+- `train/replay_buffer/num_trajectories`
+- `train/replay_buffer/total_samples`
+- `train/dagger/actor_loss`
+
+如果这三个指标都动了，说明：
+
+- 人类接管样本进了 replay buffer
+- `psi-policy` 的 HG-Dagger batch 组装是通的
+- actor 确实在更新
+
+### 4.1 这套 HG-Dagger 配置现在的实际值
+
+如果你跑的是默认推荐入口 `realworld_a2d_dagger_psi`（等价于 `realworld_a2d_dagger_psi_rtc`），当前实际值是：
+
+- `algorithm.loss_type: embodied_dagger`
+- `algorithm.dagger.only_save_expert: True`
+- `actor.model.num_action_chunks: 4`
+- `actor.model.action_dim: 26`
+- `rollout.action_execution.mode: rtc`
+- `rollout.action_execution.rtc.search_window: 4`
+- `rollout.action_execution.rtc.merge_weight_base: 0.8`
+- `rollout.model.noise_std_rollout: 0.0`
+- `actor.model.noise_std_train: 0.0`
+- `actor.micro_batch_size: 8`
+- `actor.global_batch_size: 8`
+- `actor.optim.lr: 3e-5`
+- `algorithm.update_epoch: 1`
+- `algorithm.replay_buffer.min_buffer_size: 1`
+- `runner.weight_sync_interval: 1`
+- `env.train.total_num_envs: 1`
+- `env.train.override_cfg.step_frequency: 10.0`
+- `env.train.max_steps_per_rollout_epoch: 200`
+- `env.train.max_episode_steps: 200`
+
+这里有一个容易混淆的点：
+
+- `examples/embodiment/config/model/psi_policy.yaml` 里的静态默认值是 `action_horizon: 16`
+- 但 `RLinf` 在真正加载 `psi-policy` checkpoint 后，会用 checkpoint 自己的 `n_action_steps` 覆盖这个值
+- 你当前这套 base preset 指向的 ckpt 路径是：
+  - `.../2026.04.18/23.45_zjxc_v0.12_3rgb_joint_headmask_viewtokens_na32/...`
+- 这颗 ckpt 对应的 runtime `action_horizon` 应该按 `na32` 走，也就是 `32`
+
+所以对你现在这套 A2D `psi-policy` HG-Dagger 来说，更准确的说法是：
+
+- 静态 yaml 默认值：`16`
+- 当前这颗 `na32` checkpoint 的 runtime 实际值：`32`
+
+配置里虽然还有：
+
+- `algorithm.dagger.init_beta: 1.0`
+- `algorithm.dagger.beta_schedule: exponential`
+- `algorithm.dagger.beta_decay: 0.99`
+- `algorithm.dagger.beta_min: 0.05`
+
+但这套 A2D `psi-policy` HG-Dagger 没有配置 `rollout.expert_model`，所以这里不是“beta 混合 teacher policy”的经典 DAgger 路径，而是 **teleop 人类接管 + only_save_expert=True** 的 HG-Dagger 路径。
+
+### 4.2 现在 `psi-policy` 的 HG-Dagger 样本语义
+
+现在的 `psi-policy` HG-Dagger 不是“拿某一次 rollout sampled chunk 直接监督”。
+
+当前实现分两步：
+
+1. rollout / env 先记录 **最终真实执行动作流**
+   - 标签源是 `Trajectory.actions`
+   - 在 RTC 模式下，这里面已经是 RTC 裁剪 / 平滑之后真正执行的动作
+   - 如果中间有人类接管，接管后的动作也会被写回这里
+
+2. actor 收到 raw trajectory 之后，再重组训练样本
+   - 只把“当前 chunk 的 4 个子步都由 expert/teleop 执行”的位置当成 anchor
+   - 输入是该时刻的观测 `obs_t`
+   - 标签不是 raw `model_action`
+   - 标签是从 `Trajectory.actions` 往后拼出来的 future executed action window
+   - 当前窗口长度固定跟运行时 checkpoint 的 `action_horizon` 走；你现在这颗 `na32` ckpt 对应的是 `32`
+
+也就是说，现在学的是：
+
+- `obs_t -> future 32-step executed action window`
+
+这和 `psi-policy` 原本的 IL 训练语义是对齐的。
+
+### 4.3 启动 HG-Dagger 之后，异步链路里先后发生什么
+
+按默认配置 `realworld_a2d_dagger_psi`，细粒度顺序是：
+
+1. `run_realworld_async.sh` 调 `train_async.py`
+2. Hydra 组合出 `realworld_a2d_dagger_psi_rtc + realworld_a2d_dagger_psi_base`
+3. 因为 `algorithm.loss_type=embodied_dagger`，runner 会选择：
+   - `AsyncEmbodiedRunner`
+   - `AsyncEmbodiedDAGGERFSDPPolicy`
+   - `AsyncMultiStepRolloutWorker`
+   - `AsyncEnvWorker`
+4. actor 加载原始 `psi-policy` ckpt 和 normalizer，创建 replay buffer
+5. rollout 加载自己的 `psi-policy` 副本，并创建 RTC action execution adapter
+6. runner 先做一次 actor -> rollout 权重同步；之后每 `weight_sync_interval=1` 个训练 step 再同步一次
+7. env 把当前观测发给 rollout
+8. rollout 用 `psi-policy` 预测完整 horizon，但只取 RTC 处理后的 `num_action_chunks=4` 步真实执行动作发回 env
+9. env 真正执行这 4 步动作，得到：
+   - `rewards`
+   - `dones`
+   - `transition_valids`
+   - 以及可能存在的 `intervene_action / intervene_flag`
+10. 如果有人类接管，env 会把最后真实执行动作写回 `Trajectory.actions`
+11. env 累积整段 raw trajectory，并在 rollout epoch 结束后发给 actor
+12. 对 `psi-policy`，actor 不再直接做 action-level `extract_intervene_traj(mode="all")`
+13. actor 会先把 raw trajectory 重组成：
+   - `obs_t -> future 32-step executed action window`
+14. 这些 windowized 样本进入 replay buffer
+15. 只要 buffer 达到 `min_buffer_size=1`，actor 就开始训练
+16. 每次训练用：
+   - `global_batch_size=8`
+   - `micro_batch_size=8`
+   - `update_epoch=1`
+   - `lr=3e-5`
+17. learner 前向走 `ForwardType.SFT`，损失直接复用 `psi-policy` 原生 IMLE loss
+18. actor 更新完权重后，runner 再把新权重同步给 rollout
+19. rollout 用新权重继续在线跑，形成异步闭环
+
+### 4.4 启动训练
 
 在 `RLinf` 根目录：
 
 ```bash
-python examples/embodiment/train_embodied_agent.py \
+bash examples/embodiment/run_realworld_async.sh realworld_a2d_sac_psi
+```
+
+如果你想直接看清楚底层入口，也可以不用包装脚本，直接运行：
+
+```bash
+python examples/embodiment/train_async.py \
   --config-path examples/embodiment/config \
   --config-name realworld_a2d_sac_psi
 ```
 
 这条命令的含义：
 
-- `train_embodied_agent.py`
-  - RLinf 具身训练主入口
+- `run_realworld_async.sh`
+  - A2D 真机异步训练启动脚本
+  - 内部调用 `train_async.py`
+- `train_async.py`
+  - RLinf 具身异步训练主入口
 - `--config-path examples/embodiment/config`
   - 使用仓库里的具身配置目录
 - `--config-name realworld_a2d_sac_psi`
-  - 使用 A2D 真机 + SAC + psi-policy 这份配置
+  - 使用 A2D 真机 + 异步 SAC + psi-policy 这份配置
 
 如果你想自动生成带时间戳的日志目录，也可以直接用脚本：
 
 ```bash
-bash examples/embodiment/run_realworld.sh realworld_a2d_sac_psi
+bash examples/embodiment/run_realworld_async.sh realworld_a2d_sac_psi
 ```
 
 这条脚本实际做的事情是：
 
-- 调用同一个 `train_embodied_agent.py`
+- 调用同一个 `train_async.py`
 - 自动把 `runner.logger.log_path` 改成 `logs/<时间>-realworld_a2d_sac_psi`
 - 把终端输出同时保存到 `run_embodiment.log`
 
@@ -346,16 +557,21 @@ cd /path/to/RLinf
 source .venv/bin/activate
 ray stop --force
 ray start --head
-python examples/embodiment/train_embodied_agent.py \
-  --config-path examples/embodiment/config \
-  --config-name realworld_a2d_sac_psi
+bash examples/embodiment/run_realworld_async.sh realworld_a2d_sac_psi
 ```
 
 ### 4.2 只验证链路，不接真机
 
 ```bash
-python examples/embodiment/train_embodied_agent.py \
-  --config-name ../tests/e2e_tests/embodied/realworld_a2d_dummy_sac_psi
+bash tests/e2e_tests/embodied/run_async.sh realworld_a2d_dummy_sac_psi
+```
+
+或者直接调异步主程序：
+
+```bash
+python examples/embodiment/train_async.py \
+  --config-path tests/e2e_tests/embodied \
+  --config-name realworld_a2d_dummy_sac_psi
 ```
 
 这一步只验证 RLinf 训练链路，不验证 A2D 真机。
@@ -373,8 +589,8 @@ python examples/embodiment/train_embodied_agent.py \
 4. 进入准备或切换阶段时，模式会到 `99`
    - 这部分帧不会进 replay
 5. 一段任务结束后，用键盘给稀疏奖励
-   - `c` 成功
-   - `a` 失败
+   - `s` 成功
+   - `f` 失败
 6. 自动 reset 后开始下一轮
 
 你的目标轨迹在 RL 里会由两部分组成：
@@ -406,11 +622,11 @@ python examples/embodiment/train_embodied_agent.py \
 
 ## 6. 结果保存到哪里
 
-如果你直接跑 `python ...`，默认配置里的日志目录是：
+如果你直接跑 `python examples/embodiment/train_async.py ...`，默认配置里的日志目录是：
 
 - `../results`
 
-如果你跑 `bash examples/embodiment/run_realworld.sh realworld_a2d_sac_psi`，日志目录会是：
+如果你跑 `bash examples/embodiment/run_realworld_async.sh realworld_a2d_sac_psi`，日志目录会是：
 
 - `logs/<时间>-realworld_a2d_sac_psi`
 
@@ -517,5 +733,5 @@ python examples/embodiment/train_embodied_agent.py \
 
 直接看这两份文档：
 
-- [A2D_HIL_IMPLEMENTATION_KB.md](/Users/matthew/Documents/a2d/RLinf/A2D_HIL_IMPLEMENTATION_KB.md)
-- [A2D_IMAGE_SERVER_KB.md](/Users/matthew/Documents/a2d/A2D_IMAGE_SERVER_KB.md)
+- `A2D_HIL_IMPLEMENTATION_KB.md`
+- `A2D_IMAGE_SERVER_KB.md`（如果你本地没带这份文档，去 A2D 侧知识库找同名文件）

@@ -1,0 +1,262 @@
+defaults:
+  - /env/realworld_a2d@env.train
+  - /env/realworld_a2d@env.eval
+  - /model/psi_policy@actor.model
+  - /training_backend/fsdp@actor.fsdp_config
+  - _self_
+
+_preset:
+  reset_controller_action: &a2d_reset_controller_action
+    [
+      0.6979961400, 0.4500000000,
+      1.9420366000, -0.4231712000, -0.8902466000, -1.4857279000, 1.7554438000, -1.3996819000,
+      -0.9746348000, -1.6847103000, 0.4934860000, 0.6415755000, 1.3170998000, -1.7865136000,
+      1.3996296000, 1.1738354000, 0.0000000000, 0.0014652000, 0.0021978000, 0.0461538000,
+      0.9975580000, 0.9825397000, 0.0000000000, 0.0102564000, 0.0954823000, 0.0627595000,
+      0.9968254000, 0.9975580000,
+    ]
+  safe_box_low: &a2d_safe_box_low
+    [
+      1.6324763000, -0.7395217000, -1.0694433000, -1.4900000000,
+      1.5593078000, -1.4000000000, -1.4539014000, -1.9390030000,
+      0.4970931000, 0.2120801000, 1.0039701000, -1.9653741000,
+      1.4000000000, 0.9624191000,
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    ]
+  safe_box_high: &a2d_safe_box_high
+    [
+      2.1368800000, -0.4390409000, -0.3191070000, -1.1114357000,
+      1.9030758000, -1.4000000000, -0.7731066000, -1.4986966000,
+      0.7409096000, 0.8617690000, 1.4400209000, -1.6590335000,
+      1.4000000000, 1.5401177000,
+      0.1722222000, 0.0000000000, 0.1105263000, 0.1877193000, 1.0000000000, 1.0000000000,
+      0.0000000000, 0.0000000000, 0.2140351000, 0.2201755000, 1.0000000000, 1.0000000000,
+    ]
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    actor:
+      node_group: "4090"
+      placement: 0
+    env:
+      node_group: a2d
+      placement: 0
+    rollout:
+      node_group: "4090"
+      placement: 0
+  node_groups:
+    - label: "4090"
+      node_ranks: 0
+    - label: a2d
+      node_ranks: 0
+      hardware:
+        type: A2D
+        configs:
+          - controller_host: "127.0.0.1"
+            grpc_port: 12321
+            container_name: "a2d-tele-release-2-1-0rc3-latest"
+            auto_start_server: false
+            node_rank: 0
+
+runner:
+  task_type: embodied
+  logger:
+    log_path: "../results"
+    project_name: rlinf
+    experiment_name: "a2d_dagger_psi_base"
+    logger_backends: ["tensorboard"]
+  max_epochs: 8000
+  max_steps: -1
+  only_eval: False
+  val_check_interval: -1
+  save_interval: -1
+  weight_sync_interval: 1
+  resume_dir: null
+  ckpt_path: null
+
+algorithm:
+  dagger:
+    init_beta: 1.0
+    beta_schedule: "exponential"
+    beta_decay: 0.99
+    beta_min: 0.05
+    only_save_expert: True
+
+  rollout_epoch: 1
+  eval_rollout_epoch: 1
+  gamma: 0.99
+
+  update_epoch: 1
+  adv_type: gae
+  loss_type: embodied_dagger
+
+  sampling_params:
+    do_sample: True
+    temperature_train: 1.0
+    temperature_eval: 1.0
+    top_k: 50
+    top_p: 1.0
+    repetition_penalty: 1.0
+    add_BOS: False
+
+  length_params:
+    max_new_token: 26
+    max_length: 1024
+    min_length: 1
+
+  replay_buffer:
+    enable_cache: True
+    cache_size: 2000
+    min_buffer_size: 1
+    sample_window_size: 2000
+    auto_save: False
+
+env:
+  group_name: "EnvGroup"
+
+  train:
+    total_num_envs: 1
+    keyboard_reward_wrapper: single_stage
+    ignore_terminations: False
+    override_cfg:
+      is_dummy: False
+      controller_host: null
+      controller_port: 12321
+      container_name: null
+      auto_start_server: False
+      task_name: "A2D psi-policy HG-Dagger"
+      step_frequency: 10.0
+      max_num_steps: 200
+      reset_on_env_reset: True
+      policy_action_dim: 26
+      reset_controller_action: *a2d_reset_controller_action
+      reset_move_timeout_s: 12.0
+      reset_tolerance: 0.03
+      model_control_modes: [0]
+      teleop_control_modes: [1]
+      idle_control_modes: [99]
+      image_keys: ["rgb_head", "rgb_left_hand", "rgb_right_hand"]
+      state_keys:
+        ["arm_joint_states", "left_hand_states", "right_hand_states", "waist_joints_states"]
+      image_shapes:
+        rgb_head: [720, 1080, 3]
+        rgb_left_hand: [720, 1080, 3]
+        rgb_right_hand: [720, 1080, 3]
+      state_shapes:
+        arm_joint_states: [14]
+        left_hand_states: [6]
+        right_hand_states: [6]
+        waist_joints_states: [2]
+      safe_box:
+        enabled: true
+        low: *a2d_safe_box_low
+        high: *a2d_safe_box_high
+    max_steps_per_rollout_epoch: 200
+    max_episode_steps: 200
+
+  eval:
+    total_num_envs: 1
+    keyboard_reward_wrapper: single_stage
+    ignore_terminations: False
+    override_cfg:
+      is_dummy: False
+      task_name: "A2D psi-policy HG-Dagger eval"
+      step_frequency: 10.0
+      max_num_steps: 200
+      reset_on_env_reset: True
+      policy_action_dim: 26
+      reset_controller_action: *a2d_reset_controller_action
+      reset_move_timeout_s: 12.0
+      reset_tolerance: 0.03
+      model_control_modes: [0]
+      teleop_control_modes: [1]
+      idle_control_modes: [99]
+      image_keys: ["rgb_head", "rgb_left_hand", "rgb_right_hand"]
+      state_keys:
+        ["arm_joint_states", "left_hand_states", "right_hand_states", "waist_joints_states"]
+      image_shapes:
+        rgb_head: [720, 1080, 3]
+        rgb_left_hand: [720, 1080, 3]
+        rgb_right_hand: [720, 1080, 3]
+      state_shapes:
+        arm_joint_states: [14]
+        left_hand_states: [6]
+        right_hand_states: [6]
+        waist_joints_states: [2]
+      safe_box:
+        enabled: true
+        low: *a2d_safe_box_low
+        high: *a2d_safe_box_high
+    max_steps_per_rollout_epoch: 200
+    max_episode_steps: 200
+
+rollout:
+  group_name: "RolloutGroup"
+  backend: "huggingface"
+  enable_offload: False
+  pipeline_stage_num: 1
+  sync_weight_nccl_max_ctas: 32
+  collect_transitions: True
+  collect_prev_infos: False
+  action_execution:
+    mode: rtc
+    noise_stage: pre_smooth
+    reset_on_episode_end: true
+    rtc:
+      search_window: 4
+      merge_weight_base: 0.8
+    window:
+      window_size: 8
+      overlap_steps: 4
+  model:
+    model_path: "/home/descfly/ceyao_dev/psi-policy/data/outputs/2026.04.18/23.45_zjxc_v0.12_3rgb_joint_headmask_viewtokens_na32/checkpoints/epoch=7000-train_loss=0.08475.ckpt"
+    normalizer_path: "/home/descfly/ceyao_dev/psi-policy/data/outputs/2026.04.18/23.45_zjxc_v0.12_3rgb_joint_headmask_viewtokens_na32/normalizer.pkl"
+    precision: bf16
+    noise_std_rollout: 0.0
+  enable_torch_compile: False
+  enable_cuda_graph: False
+
+actor:
+  sync_weight_no_wait: true
+  recv_drain_max_trajectories: 32
+  group_name: "ActorGroup"
+  training_backend: "fsdp"
+  micro_batch_size: 8
+  global_batch_size: 8
+  seed: 1234
+  enable_offload: False
+
+  model:
+    model_path: "/home/descfly/ceyao_dev/psi-policy/data/outputs/2026.04.18/23.45_zjxc_v0.12_3rgb_joint_headmask_viewtokens_na32/checkpoints/epoch=7000-train_loss=0.08475.ckpt"
+    normalizer_path: "/home/descfly/ceyao_dev/psi-policy/data/outputs/2026.04.18/23.45_zjxc_v0.12_3rgb_joint_headmask_viewtokens_na32/normalizer.pkl"
+    action_dim: 26
+    num_action_chunks: 4
+    add_q_head: true
+    use_chunk_rl: true
+    num_q_heads: 2
+    precision: bf16
+    train_obs_encoder: false
+    noise_std_train: 0.0
+    noise_std_rollout: 0.0
+
+  optim:
+    clip_grad: 10.0
+    lr: 3e-5
+    lr_scheduler: torch_constant
+
+  fsdp_config:
+    strategy: "fsdp"
+    sharding_strategy: "no_shard"
+    use_orig_params: True
+    mixed_precision:
+      param_dtype: bf16
+      reduce_dtype: bf16
+      buffer_dtype: bf16
+
+reward:
+  use_reward_model: False
+
+critic:
+  use_critic_model: False

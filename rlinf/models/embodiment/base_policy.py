@@ -45,6 +45,7 @@ class BasePolicy(ABC):
         - crossq_forward
         - crossq_q_forward
         - iql_forward
+        - prepare_dagger_replay_trajectories
         - prepare_dagger_sft_batch
     """
 
@@ -68,6 +69,9 @@ class BasePolicy(ABC):
 
     def iql_forward(self, **kwargs):
         raise NotImplementedError
+
+    def prepare_dagger_replay_trajectories(self, trajectory):
+        return trajectory.extract_intervene_traj(mode="all")
 
     def prepare_dagger_sft_batch(self, batch):
         raise NotImplementedError(

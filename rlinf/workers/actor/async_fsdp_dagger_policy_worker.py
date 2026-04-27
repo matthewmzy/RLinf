@@ -68,9 +68,7 @@ class AsyncEmbodiedDAGGERFSDPPolicy(EmbodiedDAGGERFSDPPolicy):
 
         intervene_traj_list = []
         for traj in recv_list:
-            intervene_trajs = traj.extract_intervene_traj(mode="all")
-            if intervene_trajs is not None:
-                intervene_traj_list.extend(intervene_trajs)
+            intervene_traj_list.extend(self._prepare_replay_trajectories(traj))
         if intervene_traj_list:
             self.replay_buffer.add_trajectories(intervene_traj_list)
 

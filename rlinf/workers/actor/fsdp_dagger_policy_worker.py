@@ -85,11 +85,22 @@ class EmbodiedDAGGERFSDPPolicy(EmbodiedFSDPActor):
         intervene_traj_list = []
         for traj in recv_list:
             assert isinstance(traj, Trajectory)
-            intervene_trajs = traj.extract_intervene_traj(mode="all")
-            if intervene_trajs is not None:
-                intervene_traj_list.extend(intervene_trajs)
+            intervene_traj_list.extend(self._prepare_replay_trajectories(traj))
         if intervene_traj_list:
             self.replay_buffer.add_trajectories(intervene_traj_list)
+
+    def _prepare_replay_trajectories(self, trajectory: Trajectory) -> list[Trajectory]:
+        prepared = self.model.prepare_dagger_replay_trajectories(trajectory)
+        if prepared is None:
+            return []
+        if isinstance(prepared, Trajectory):
+            return [prepared]
+        if isinstance(prepared, (list, tuple)):
+            return [traj for traj in prepared if traj is not None]
+        raise TypeError(
+            "prepare_dagger_replay_trajectories must return a Trajectory, a list/tuple "
+            f"of Trajectory objects, or None. Got {type(prepared)}."
+        )
 
     def _prepare_sft_batch(self, batch):
         """Prepare model-specific DAgger training inputs."""

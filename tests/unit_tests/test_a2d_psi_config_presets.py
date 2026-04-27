@@ -106,3 +106,36 @@ def test_async_preset_keeps_rollout_model_noise_override():
         OmegaConf.to_container(cfg.rollout.model, resolve=True)["normalizer_path"]
         == EXPECTED_NORMALIZER
     )
+
+
+@pytest.mark.parametrize(
+    ("config_name", "mode"),
+    [
+        ("realworld_a2d_dagger_psi", "rtc"),
+        ("realworld_a2d_dagger_psi_rtc", "rtc"),
+        ("realworld_a2d_dagger_psi_direct", "direct"),
+        ("realworld_a2d_dagger_psi_window", "window_blend"),
+    ],
+)
+def test_a2d_dagger_psi_presets_compose(config_name, mode):
+    cfg = _compose(config_name)
+
+    assert cfg.algorithm.loss_type == "embodied_dagger"
+    assert cfg.algorithm.dagger.only_save_expert is True
+    assert cfg.rollout.action_execution.mode == mode
+    assert cfg.rollout.action_execution.noise_stage == "pre_smooth"
+    assert cfg.runner.ckpt_path is None
+    assert cfg.rollout.get("expert_model", None) is None
+    assert cfg.actor.micro_batch_size == 8
+    assert cfg.actor.global_batch_size == 8
+    assert cfg.actor.model.model_path == EXPECTED_POLICY_CKPT
+    assert cfg.rollout.model.model_path == EXPECTED_POLICY_CKPT
+    assert cfg.actor.model.normalizer_path == EXPECTED_NORMALIZER
+    assert cfg.rollout.model.normalizer_path == EXPECTED_NORMALIZER
+    assert cfg.rollout.model.noise_std_rollout == 0.0
+    assert cfg.actor.model.add_q_head is True
+    assert cfg.actor.model.use_chunk_rl is True
+    assert cfg.actor.model.num_q_heads == 2
+    assert cfg.actor.model.num_action_chunks == 4
+    assert cfg.env.train.override_cfg.policy_action_dim == 26
+    assert cfg.env.train.override_cfg.safe_box.enabled is True
