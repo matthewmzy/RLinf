@@ -110,7 +110,9 @@ class DexHandIntervention(gym.ActionWrapper):
         if time.time() - self._last_intervene < self._timeout:
             return expert_action, True
 
-        return action, False
+        fallback = np.array(action, dtype=np.float64)
+        fallback[6:] = self._hand_current
+        return fallback, False
 
     def step(self, action):
         new_action, replaced = self.action(action)

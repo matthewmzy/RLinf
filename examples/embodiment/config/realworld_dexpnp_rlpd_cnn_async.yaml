@@ -3,6 +3,7 @@ defaults:
   - env/realworld_dex_pnp@env.eval
   - model/cnn_policy@actor.model
   - training_backend/fsdp@actor.fsdp_config
+  - weight_syncer/patch_syncer@weight_syncer
   - override hydra/job_logging: stdout
 
 hydra:
@@ -210,7 +211,7 @@ actor:
 reward:
   use_reward_model: True
   group_name: "RewardGroup"
-  standalone_realworld: True
+  standalone_realworld: False
   reward_mode: "per_step"
   reward_threshold: 0.75
   reward_weight: 1.0
