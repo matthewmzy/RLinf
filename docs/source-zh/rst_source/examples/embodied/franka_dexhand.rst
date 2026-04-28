@@ -58,7 +58,7 @@ RL 训练使用 ``examples/embodiment/config/realworld_dexpnp_rlpd_cnn_async.yam
 - reward ``model.model_path``
 - ``end_effector_config`` 与 ``glove_config`` 中的串口参数
 
-如果需要自定义相机命名或 crop，请直接在 ``override_cfg`` 中按 serial
+如果需要自定义相机命名或 crop，请直接在 ``override_cfg`` 中按序列号 serial
 填写；本 PR 默认不提交任何特定 serial 的配置，避免影响其他项目。例如：
 
 .. code-block:: yaml
@@ -75,23 +75,26 @@ RL 训练使用 ``examples/embodiment/config/realworld_dexpnp_rlpd_cnn_async.yam
 工作流
 ------
 
-1. 按照 :doc:`franka` 完成环境部署和 Ray 集群配置，然后用下面的命令安装带灵巧手支持的 Franka 环境：
+1. 在机器人控制端（``NUC``）按照 :doc:`franka` 完成基础环境部署，然后安装带灵巧手支持的 Franka 环境：
 
    .. code-block:: bash
 
       bash requirements/install.sh embodied --env franka --dexhand
 
-   如果你还需要手套遥操作，请再额外安装 dexhand 包的 glove 依赖。
-2. 使用下面的入口采集专家 demo：
+   该命令会安装 ``RLinf-dexterous-hands``，其中包含睿研灵巧手与数据手套驱动。
+2. 在 ``NUC`` 上配好采集任务参数，包括 ``robot_ip``、``target_ee_pose``、``end_effector_config``、``glove_config`` 等。
+3. 在 ``NUC`` 上采集专家 demo：
 
    .. code-block:: bash
 
       bash examples/embodiment/collect_data.sh realworld_collect_dexhand_data
 
-3. 使用同一个入口再次采集 reward 原始 episode；这一轮建议调大 ``env.eval.override_cfg.success_hold_steps``，并使用单独的日志目录。
-4. 按照 :doc:`franka_reward_model` 中的方法，用 ``examples/reward/preprocess_reward_dataset.py`` 生成 reward dataset。
-5. 使用 ``examples/reward/run_reward_training.sh`` 训练 reward model。
-6. 使用下面的命令启动 RL：
+4. 在 ``NUC`` 上使用同一个入口再次采集 reward 原始 episode；这一轮建议调大 ``env.eval.override_cfg.success_hold_steps``，并使用单独的日志目录。
+5. 将 reward 原始数据从 ``NUC`` 传到训练机（``4090``），或者提前写入共享存储。
+6. 在 ``4090`` 上按照 :doc:`franka_reward_model` 中的方法，用 ``examples/reward/preprocess_reward_dataset.py`` 生成 reward dataset。
+7. 在 ``4090`` 上使用 ``examples/reward/run_reward_training.sh`` 训练 reward model。
+8. 在启动 RL 之前，按照 :doc:`franka` 的集群配置说明，启动由 ``4090`` 和 ``NUC`` 组成的双机 Ray 集群。
+9. 在 ``4090`` 上启动 RL：
 
    .. code-block:: bash
 

@@ -77,23 +77,26 @@ in the task YAML as well.
 Workflow
 --------
 
-1. Follow :doc:`franka` to finish environment setup and Ray cluster setup, then install the Franka environment with dexterous-hand support:
+1. On the robot control machine (``NUC``), follow :doc:`franka` to finish the base environment setup, then install the Franka environment with dexterous-hand support:
 
    .. code-block:: bash
 
       bash requirements/install.sh embodied --env franka --dexhand
 
-   If you also use glove teleoperation, install the glove extra from the dexhand package separately.
-2. Collect expert demos with:
+   This command installs ``RLinf-dexterous-hands``, which includes the Ruiyan dexterous-hand and data-glove drivers.
+2. On the ``NUC``, fill in the collection-time task configuration: ``robot_ip``, ``target_ee_pose``, ``end_effector_config``, ``glove_config``, and related settings.
+3. On the ``NUC``, collect expert demos with:
 
    .. code-block:: bash
 
       bash examples/embodiment/collect_data.sh realworld_collect_dexhand_data
 
-3. Collect reward raw episodes with the same entrypoint. For this pass, increase ``env.eval.override_cfg.success_hold_steps`` and use a separate log directory.
-4. Preprocess the raw reward episodes with ``examples/reward/preprocess_reward_dataset.py`` as described in :doc:`franka_reward_model`.
-5. Train the reward model with ``examples/reward/run_reward_training.sh``.
-6. Launch RL with:
+4. On the ``NUC``, collect reward raw episodes with the same entrypoint. For this pass, increase ``env.eval.override_cfg.success_hold_steps`` and use a separate log directory.
+5. Copy the collected reward raw data from the ``NUC`` to the training machine (``4090``), or place it on shared storage in advance.
+6. On the ``4090``, preprocess the raw reward episodes with ``examples/reward/preprocess_reward_dataset.py`` as described in :doc:`franka_reward_model`.
+7. On the ``4090``, train the reward model with ``examples/reward/run_reward_training.sh``.
+8. Before the final RL run, follow the cluster setup section in :doc:`franka` to start a two-node Ray cluster with the ``4090`` as head and the ``NUC`` as worker.
+9. On the ``4090``, launch RL with:
 
    .. code-block:: bash
 
